@@ -6,15 +6,26 @@ import argparse
 import os
 
 
-SKIP_SECONDS    = 62
+SKIP_SECONDS    = 4#62
 MAX_DIST        = 60
 
-CROP         = (0, 90, 1356, 491)
-HOLE         = (445, 0, 1356 - 445, 491)
+# Regions are tuned against this source resolution and scaled per input video.
+REFERENCE_FRAME_SIZE = (1366, 768)
+CROP_REF             = (0, 90, 1356, 491)
+CROP_REF_SIZE        = (CROP_REF[2] - CROP_REF[0], CROP_REF[3] - CROP_REF[1])
+HOLE_REF             = (445, 0, 1356 - 445, 491)
 MAX_TRAIL    = 38
 TRAIL_DECAY  = 0.95
 
-SCORE_REGION = (332, 148, 395, 190)
+SCORE_REGION_REF_BY_SIDE = {
+    "red": (322, 136, 405, 195),
+    "blue": (950, 136, 1026, 185),
+}
+
+ACTIVE_REGION_REF_BY_SIDE = {
+    "red": (0, 0, CROP_REF_SIZE[0] // 2, CROP_REF_SIZE[1]),
+    "blue": (CROP_REF_SIZE[0] // 2, 0, CROP_REF_SIZE[0], CROP_REF_SIZE[1]),
+}
 
 PARABOLA_MIN_POINTS      = 8
 PARABOLA_A_MAX           = 0.003 # kind of a min tho, graphics coords rip 0.003
@@ -150,9 +161,72 @@ def point_in_polygon(point, polygon):
     poly = np.array(polygon, dtype=np.int32)
     return cv2.pointPolygonTest(poly, point, False) >= 0
 
-def blackout_hole(frame):
-    x1, y1, x2, y2 = HOLE
+
+def scale_region(region, sx, sy):
+    x1, y1, x2, y2 = region
+    return (
+        int(round(x1 * sx)),
+        int(round(y1 * sy)),
+        int(round(x2 * sx)),
+        int(round(y2 * sy)),
+    )
+
+
+def clamp_region_for_slice(region, frame_w, frame_h):
+    x1, y1, x2, y2 = region
+    x1 = max(0, min(x1, frame_w - 1))
+    y1 = max(0, min(y1, frame_h - 1))
+    x2 = max(x1 + 1, min(x2, frame_w))
+    y2 = max(y1 + 1, min(y2, frame_h))
+    return x1, y1, x2, y2
+
+
+def clamp_region(region, frame_w, frame_h):
+    x1, y1, x2, y2 = region
+    x1 = max(0, min(x1, frame_w - 1))
+    y1 = max(0, min(y1, frame_h - 1))
+    x2 = max(x1, min(x2, frame_w - 1))
+    y2 = max(y1, min(y2, frame_h - 1))
+    return x1, y1, x2, y2
+
+
+def get_runtime_regions(frame_w, frame_h, side):
+    ref_w, ref_h = REFERENCE_FRAME_SIZE
+    sx = frame_w / ref_w
+    sy = frame_h / ref_h
+
+    crop_region = clamp_region_for_slice(scale_region(CROP_REF, sx, sy), frame_w, frame_h)
+    crop_w      = crop_region[2] - crop_region[0]
+    crop_h      = crop_region[3] - crop_region[1]
+
+    crop_ref_w, crop_ref_h = CROP_REF_SIZE
+    crop_sx = crop_w / crop_ref_w
+    crop_sy = crop_h / crop_ref_h
+
+    hole_region = clamp_region(scale_region(HOLE_REF, crop_sx, crop_sy), crop_w, crop_h)
+
+    score_ref = SCORE_REGION_REF_BY_SIDE[side]
+    score_region = clamp_region(scale_region(score_ref, crop_sx, crop_sy), crop_w, crop_h)
+
+    active_ref = ACTIVE_REGION_REF_BY_SIDE[side]
+    active_region = clamp_region(scale_region(active_ref, crop_sx, crop_sy), crop_w, crop_h)
+
+    return crop_region, hole_region, score_region, active_region
+
+
+def blackout_hole(frame, hole_region):
+    x1, y1, x2, y2 = hole_region
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    return frame
+
+
+def blackout_outside_active(frame, active_region):
+    x1, y1, x2, y2 = active_region
+    h, w = frame.shape[:2]
+    cv2.rectangle(frame, (0, 0), (w - 1, max(0, y1 - 1)), (0, 0, 0), -1)
+    cv2.rectangle(frame, (0, min(h - 1, y2 + 1)), (w - 1, h - 1), (0, 0, 0), -1)
+    cv2.rectangle(frame, (0, y1), (max(0, x1 - 1), y2), (0, 0, 0), -1)
+    cv2.rectangle(frame, (min(w - 1, x2 + 1), y1), (w - 1, y2), (0, 0, 0), -1)
     return frame
 
 def is_approximately_yellow(point, frame):
@@ -187,11 +261,11 @@ def fit_parabola(points):
     return a, b, c, r2
 
 
-def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame):
+def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_region):
     if len(pts) < 2:
         return False
 
-    in_score           = point_in_polygon(pts[-1], score_region_hexagon(SCORE_REGION))
+    in_score           = point_in_polygon(pts[-1], score_region_hexagon(score_region))
     id_cooldown_ok     = (frame_idx - last_score_frame_per_id[oid]) > ID_SCORE_COOLDOWN_FRAMES
     global_cooldown_ok = (frame_idx - last_score_frame) > SCORE_COOLDOWN_FRAMES
 
@@ -200,7 +274,7 @@ def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_scor
 
     prev_x, prev_y = pts[-2]
     cur_x, cur_y   = pts[-1]
-    x1, y1, x2, y2 = SCORE_REGION
+    x1, y1, x2, y2 = score_region
 
     enters_bucket = prev_y < y1 <= cur_y and x1 <= cur_x <= x2
     falling_down  = cur_y > prev_y
@@ -214,15 +288,20 @@ def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_scor
 # -----------------------------
 # DETECTION
 # -----------------------------
-def detect_circles(frame):
-    hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+def detect_circles(frame, hole_region, active_region):
+    ax1, ay1, ax2, ay2 = active_region
+    roi = frame[ay1:ay2 + 1, ax1:ax2 + 1]
+    if roi.size == 0:
+        return []
+
+    hsv  = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask = (
         cv2.inRange(hsv, (20, 120, 120), (40, 255, 255)) |
         cv2.inRange(hsv, (90, 120,  80), (130, 255, 255)) |
         cv2.inRange(hsv, (0,  120,  80), (10,  255, 255)) |
         cv2.inRange(hsv, (170, 120, 80), (180, 255, 255))
     )
-    gray     = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray     = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray     = cv2.GaussianBlur(gray, (9, 9), 2)
     edges    = cv2.Canny(gray, 50, 150)
     combined = cv2.bitwise_or(edges, mask)
@@ -236,22 +315,35 @@ def detect_circles(frame):
     detections = []
     if circles is not None:
         for (x, y, r) in np.round(circles[0, :]).astype("int"):
-            if not in_region((x, y), HOLE) and is_approximately_yellow((x, y), frame):
-                detections.append((x, y, r))
+            gx, gy = x + ax1, y + ay1
+            if not in_region((gx, gy), hole_region) and is_approximately_yellow((gx, gy), frame):
+                detections.append((gx, gy, r))
     return detections
 
 
 
-def crop_frame(frame):
-    x1, y1, x2, y2 = CROP
+def crop_frame(frame, crop_region):
+    x1, y1, x2, y2 = crop_region
     return frame[y1:y2, x1:x2]
 
 
 
-def run(video_path):
+def run(video_path, side):
     cap = cv2.VideoCapture(video_path)
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if frame_w <= 0 or frame_h <= 0:
+        raise RuntimeError("Could not read input video dimensions")
+
+    crop_region, hole_region, score_region, active_region = get_runtime_regions(frame_w, frame_h, side)
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     skip_frames = int(SKIP_SECONDS * fps)
+
+    print(
+        f"[regions] src={frame_w}x{frame_h} crop={crop_region} "
+        f"hole={hole_region} score={score_region} active={active_region}"
+    )
 
     tracker  = Tracker()
     trails   = defaultdict(list)
@@ -283,8 +375,8 @@ def run(video_path):
 
         t_start = time.perf_counter()
 
-        frame   = crop_frame(frame)
-        circles = detect_circles(frame)
+        frame   = crop_frame(frame, crop_region)
+        circles = detect_circles(frame, hole_region, active_region)
         objects = tracker.update([(x, y) for (x, y, r) in circles])
 
         # Update trails — only for non-ghost tracks
@@ -311,7 +403,9 @@ def run(video_path):
 
         # Scoring
         for oid, pts in trails.items():
-            if check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame):
+            if check_parabola_score(
+                oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_region
+            ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx
                 last_score_frame             = frame_idx
@@ -319,9 +413,10 @@ def run(video_path):
 
         # ----- Visuals -----
         vis = frame.copy()
-        vis = blackout_hole(vis)
+        vis = blackout_outside_active(vis, active_region)
+        vis = blackout_hole(vis, hole_region)
 
-        score_poly = np.array(score_region_hexagon(SCORE_REGION), dtype=np.int32)
+        score_poly = np.array(score_region_hexagon(score_region), dtype=np.int32)
         cv2.polylines(vis, [score_poly], True, (0, 255, 0), 2)
 
         # Detected circles
@@ -397,23 +492,18 @@ def run(video_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Track")
-    parser.add_argument("--side", type=str)
+    parser.add_argument("--side", type=str, choices=["red", "blue"], default="red")
     parser.add_argument("--frame-drop", type=int)
     parser.add_argument("--video-file", type=str)
     args=parser.parse_args()
 
     cv2.setNumThreads(os.cpu_count() or 1)
 
-    if (args.side == "red"):
-        SCORE_REGION = (332, 148, 395, 190)
-    elif (args.side == "blue"):
-        SCORE_REGION = (953, 148, 1016, 190)
-
-    if args.frame_drop != None:
+    if args.frame_drop is not None:
         FRAME_SKIP = args.frame_drop
 
     
         
     print("Initializing...")
-    sc = run(args.video_file)
+    sc = run(args.video_file, args.side)
     print(f"Final score: {sc}")
