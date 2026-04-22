@@ -44,23 +44,26 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         f"hole={hole_region} score={score_polygon} active={active_region}"
     )
 
-    tracker = Tracker()
-    trails = defaultdict(list)
-    t_alphas = defaultdict(list)
+    tracker  = Tracker()
+    trails   = defaultdict(list)  # smoothed position history per track
+    t_alphas = defaultdict(list)  # opacity per trail point, decays over time
+    first_seen = {}               # first position ever seen for each track, before trail decay can erase it
+    origins    = {}               # launch point per track, only shown once confirmed scored
 
-    score = 0
-    last_score_frame = -SCORE_COOLDOWN_FRAMES
+    score                   = 0
+    last_score_frame        = -SCORE_COOLDOWN_FRAMES
     last_score_frame_per_id = defaultdict(lambda: -10)
-    scored_track_ids = set()
+    scored_track_ids        = set()
 
-    fps_window = 30
-    frame_times = []
-    display_fps = 0.0
+    fps_window   = 30
+    frame_times  = []
+    display_fps  = 0.0
     last_fps_update = time.time()
 
     frame_idx = 0
 
     while True:
+        # grab() seeks without decoding, much faster than read() for skipped frames
         for _ in range(max(0, frame_skip - 1)):
             cap.grab()
             frame_idx += 1
@@ -75,47 +78,53 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
 
         t_start = time.perf_counter()
 
-        frame = crop_frame(frame, crop_region)
+        frame   = crop_frame(frame, crop_region)
         circles = detect_circles(frame, hole_region, active_region)
         objects = tracker.update([(x, y) for (x, y, r) in circles])
 
         for oid, (x, y) in objects.items():
             track = tracker.tracks.get(oid)
             if track and track.ghost_count == 0:
+                if oid not in first_seen:
+                    first_seen[oid] = (x, y)
                 trails[oid].append((x, y))
                 t_alphas[oid].append(1.0)
                 if len(trails[oid]) > MAX_TRAIL:
                     trails[oid].pop(0)
                     t_alphas[oid].pop(0)
 
+        # multiply all alphas by decay factor each frame, drop points that have faded out
         for oid in list(t_alphas.keys()):
             t_alphas[oid] = [a * TRAIL_DECAY for a in t_alphas[oid]]
             combined = [(p, a) for p, a in zip(trails[oid], t_alphas[oid]) if a > 0.05]
             if combined:
                 pts, alps = zip(*combined)
-                trails[oid] = list(pts)
+                trails[oid]   = list(pts)
                 t_alphas[oid] = list(alps)
             else:
                 trails.pop(oid, None)
                 t_alphas.pop(oid, None)
 
         for oid, pts in trails.items():
-            track = tracker.tracks.get(oid)
+            track      = tracker.tracks.get(oid)
             track_lost = bool(track and track.ghost_count == 1)
             if check_parabola_score(
-                oid,
-                pts,
-                frame_idx,
-                last_score_frame_per_id,
-                last_score_frame,
-                score_polygon,
-                scored_track_ids,
-                track_lost=track_lost,
+                    oid,
+                    pts,
+                    frame_idx,
+                    last_score_frame_per_id,
+                    last_score_frame,
+                    score_polygon,
+                    scored_track_ids,
+                    track_lost=track_lost,
             ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx
-                last_score_frame = frame_idx
+                last_score_frame             = frame_idx
                 scored_track_ids.add(oid)
+                # save the launch point now that we know it was a scored shot
+                if oid not in origins and oid in first_seen:
+                    origins[oid] = first_seen[oid]
                 print(f"  [SCORE]  ID {oid} @ frame {frame_idx} -> total: {score}")
 
         vis = frame.copy()
@@ -129,10 +138,10 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.circle(vis, (x, y), 2, (0, 0, 255), -1)
 
         for oid in trails:
-            pts = trails[oid]
+            pts  = trails[oid]
             alps = t_alphas[oid]
             for i in range(1, len(pts)):
-                a = alps[i - 1]
+                a     = alps[i - 1]
                 color = (0, int(255 * a), int(255 * (1 - a)))
                 cv2.line(vis, pts[i - 1], pts[i], color, 2)
 
@@ -141,12 +150,12 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                 result = fit_parabola(pts)
                 if result:
                     a, b, c, r2 = result
-                    xs = np.array([p[0] for p in pts])
+                    xs     = np.array([p[0] for p in pts])
                     x_mean = xs.mean()
-                    col = (0, 200, 255) if r2 > PARABOLA_R2_MIN else (80, 80, 80)
+                    col    = (0, 200, 255) if r2 > PARABOLA_R2_MIN else (80, 80, 80)
                     for xi in range(int(xs.min()), int(xs.max()), 2):
-                        xn = xi - x_mean
-                        yi = int(a * xn**2 + b * xn + c)
+                        xn  = xi - x_mean
+                        yi  = int(a * xn**2 + b * xn + c)
                         xn2 = xi + 2 - x_mean
                         yi2 = int(a * xn2**2 + b * xn2 + c)
                         h, w = vis.shape[:2]
@@ -156,8 +165,8 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         for tid, track in tracker.tracks.items():
             if track.ghost_count > 0:
                 px, py = track.position()
-                alpha = 1.0 - track.ghost_count / 4
-                color = (int(100 * alpha), int(100 * alpha), int(200 * alpha))
+                alpha  = 1.0 - track.ghost_count / 4
+                color  = (int(100 * alpha), int(100 * alpha), int(200 * alpha))
                 cv2.circle(vis, (px, py), 6, color, 1)
 
         for oid, (x, y) in objects.items():
@@ -165,13 +174,27 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.putText(vis, str(oid), (x + 5, y - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+        # draw launch point markers for scored shots, persists for the rest of the video
+        for oid, (ox, oy) in origins.items():
+            arm, gap = 8, 3
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                cv2.line(
+                    vis,
+                    (ox + dx * gap,         oy + dy * gap),
+                    (ox + dx * (arm + gap), oy + dy * (arm + gap)),
+                    (0, 200, 255), 2, cv2.LINE_AA,
+                )
+            cv2.circle(vis, (ox, oy), 3, (0, 200, 255), -1, cv2.LINE_AA)
+            cv2.putText(vis, f"#{oid}", (ox + arm + gap + 2, oy + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1, cv2.LINE_AA)
+
         t_end = time.perf_counter()
         frame_times.append(t_end - t_start)
         if len(frame_times) > fps_window:
             frame_times.pop(0)
         now = time.time()
         if now - last_fps_update > 0.5 and frame_times:
-            display_fps = 1.0 / (sum(frame_times) / len(frame_times))
+            display_fps     = 1.0 / (sum(frame_times) / len(frame_times))
             last_fps_update = now
 
         cv2.putText(vis, f"Score: {score}", (460, 30),

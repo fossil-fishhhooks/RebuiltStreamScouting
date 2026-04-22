@@ -11,20 +11,20 @@ TRAIL_DECAY          = 0.95
 
 SCORE_POLYGON_REF_BY_SIDE = {
     "red": [
-        (342, 146), # top-left
-        (385, 146), # top-right
-        (395, 165), # right
-        (385, 205), # bottom-right
-        (335, 195), # bottom-left
-        (320, 165), # left
+        (333, 136), # top-left 4
+        (381, 136), # top-right 3
+        (404, 165), # right 2
+        (395, 205), # bottom-right 1
+        (333, 195), # bottom-left 6
+        (315, 165), # left 5
     ],
     "blue": [
-        (974, 126), # top-left
-        (1022, 126), # top-right
-        (1040, 155), # right
-        (1022, 185), # bottom-right
-        (960, 195), # bottom-left
-        (951, 155), # left
+        (974, 126), # top-left 3
+        (1022, 126), # top-right 4
+        (1040, 155), # right 5
+        (1022, 185), # bottom-right 6
+        (960, 195), # bottom-left 1
+        (951, 155), # left 2
     ],
 }
 
@@ -34,7 +34,7 @@ ACTIVE_REGION_REF_BY_SIDE = {
 }
 
 PARABOLA_MIN_POINTS      = 8
-PARABOLA_A_MAX           = 0.003
+PARABOLA_A_MIN           = 0.003
 PARABOLA_R2_MIN          = 0.62
 SCORE_TRAIL_WINDOW       = 8
 SCORE_MIN_DESCENT        = 4

@@ -14,6 +14,7 @@ from config import (
     SCORE_MIN_INSIDE_POINTS,
     SCORE_POLYGON_REF_BY_SIDE,
     SCORE_TRAIL_WINDOW,
+    PARABOLA_A_MIN
 )
 
 
@@ -47,8 +48,8 @@ def _orientation(a, b, c):
 
 def _on_segment(a, b, c):
     return (
-        min(a[0], c[0]) <= b[0] <= max(a[0], c[0]) and
-        min(a[1], c[1]) <= b[1] <= max(a[1], c[1])
+            min(a[0], c[0]) <= b[0] <= max(a[0], c[0]) and
+            min(a[1], c[1]) <= b[1] <= max(a[1], c[1])
     )
 
 
@@ -89,17 +90,11 @@ def trail_hits_polygon(points, polygon):
     return False
 
 
-def trail_bounced_out_of_polygon(points, polygon):
-    recent_pts = points[-SCORE_TRAIL_WINDOW:]
-    inside_flags = [point_in_polygon(point, polygon) for point in recent_pts]
-
-    if not any(inside_flags) or inside_flags == []:
+def trail_bounced_out_of_polygon(recent_pts, inside_flags):
+    if not any(inside_flags):
         return False
 
-    first_inside_idx = next((i for i, inside in enumerate(inside_flags) if inside), None)
-    if first_inside_idx is None:
-        return False
-
+    first_inside_idx = next(i for i, inside in enumerate(inside_flags) if inside)
     post_entry_pts = recent_pts[first_inside_idx:]
     if len(post_entry_pts) < 3:
         return False
@@ -211,25 +206,35 @@ def fit_parabola(points):
         r2 = float(1.0 - np.divide(ss_res, ss_tot))
     else:
         r2 = 0.0
+
+    if a<PARABOLA_A_MIN:
+        r2=0 # scuffed method
     return a, b, c, r2
 
 
 def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids, track_lost=False):
+    # cheapest checks first so we bail before doing any polygon math
     if oid in scored_track_ids or len(pts) < 2:
+        return False
+    if not track_lost:
+        return False
+    if (frame_idx - last_score_frame_per_id[oid]) <= ID_SCORE_COOLDOWN_FRAMES:
+        return False
+    if (frame_idx - last_score_frame) <= SCORE_COOLDOWN_FRAMES:
         return False
 
     recent_pts = pts[-SCORE_TRAIL_WINDOW:]
+
+    # compute inside_flags once, reuse for stable_inside and bounce check
     inside_flags = [point_in_polygon(point, score_polygon) for point in recent_pts]
-    id_cooldown_ok = (frame_idx - last_score_frame_per_id[oid]) > ID_SCORE_COOLDOWN_FRAMES
-    global_cooldown_ok = (frame_idx - last_score_frame) > SCORE_COOLDOWN_FRAMES
-    descending = recent_pts[-1][1] >= recent_pts[max(0, len(recent_pts) - 3)][1] + SCORE_MIN_DESCENT
-    hit_bucket = trail_hits_polygon(recent_pts, score_polygon)
+
+    descending   = recent_pts[-1][1] >= recent_pts[max(0, len(recent_pts) - 3)][1] + SCORE_MIN_DESCENT
     stable_inside = inside_flags[-1] and sum(inside_flags[-SCORE_MIN_INSIDE_POINTS:]) >= SCORE_MIN_INSIDE_POINTS
+    hit_bucket   = trail_hits_polygon(recent_pts, score_polygon)
 
-    if trail_bounced_out_of_polygon(recent_pts, score_polygon):
+    if not descending or not stable_inside or not hit_bucket:
         return False
-
-    if not track_lost or not hit_bucket or not descending or not stable_inside or not id_cooldown_ok or not global_cooldown_ok:
+    if trail_bounced_out_of_polygon(recent_pts, inside_flags):
         return False
 
     return True
@@ -243,10 +248,10 @@ def detect_circles(frame, hole_region, active_region):
 
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask = (
-        cv2.inRange(hsv, (20, 120, 120), (40, 255, 255)) |
-        cv2.inRange(hsv, (90, 120, 80), (130, 255, 255)) |
-        cv2.inRange(hsv, (0, 120, 80), (10, 255, 255)) |
-        cv2.inRange(hsv, (170, 120, 80), (180, 255, 255))
+            cv2.inRange(hsv, (20, 120, 120), (40, 255, 255)) |
+            cv2.inRange(hsv, (90, 120, 80), (130, 255, 255)) |
+            cv2.inRange(hsv, (0, 120, 80), (10, 255, 255)) |
+            cv2.inRange(hsv, (170, 120, 80), (180, 255, 255))
     )
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (9, 9), 2)
@@ -271,5 +276,3 @@ def detect_circles(frame, hole_region, active_region):
 def crop_frame(frame, crop_region):
     x1, y1, x2, y2 = crop_region
     return frame[y1:y2, x1:x2]
-
-
