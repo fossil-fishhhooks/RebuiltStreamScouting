@@ -100,6 +100,8 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                 t_alphas.pop(oid, None)
 
         for oid, pts in trails.items():
+            track = tracker.tracks.get(oid)
+            track_lost = bool(track and track.ghost_count == 1)
             if check_parabola_score(
                 oid,
                 pts,
@@ -108,6 +110,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                 last_score_frame,
                 score_polygon,
                 scored_track_ids,
+                track_lost=track_lost,
             ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx

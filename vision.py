@@ -93,7 +93,7 @@ def trail_bounced_out_of_polygon(points, polygon):
     recent_pts = points[-SCORE_TRAIL_WINDOW:]
     inside_flags = [point_in_polygon(point, polygon) for point in recent_pts]
 
-    if not any(inside_flags) or inside_flags[-1]:
+    if not any(inside_flags) or inside_flags == []:
         return False
 
     first_inside_idx = next((i for i, inside in enumerate(inside_flags) if inside), None)
@@ -191,7 +191,7 @@ def is_approximately_yellow(point, frame):
     return 20 <= h_val <= 40 and s_val >= 120 and v_val >= 120
 
 
-# PARABOLC CHECK
+# PARABOLIC CHECK
 def fit_parabola(points):
     if len(points) < PARABOLA_MIN_POINTS:
         return None
@@ -214,7 +214,7 @@ def fit_parabola(points):
     return a, b, c, r2
 
 
-def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids):
+def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids, track_lost=False):
     if oid in scored_track_ids or len(pts) < 2:
         return False
 
@@ -229,7 +229,7 @@ def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_scor
     if trail_bounced_out_of_polygon(recent_pts, score_polygon):
         return False
 
-    if not hit_bucket or not descending or not stable_inside or not id_cooldown_ok or not global_cooldown_ok:
+    if not track_lost or not hit_bucket or not descending or not stable_inside or not id_cooldown_ok or not global_cooldown_ok:
         return False
 
     return True
@@ -255,7 +255,7 @@ def detect_circles(frame, hole_region, active_region):
     blurred = cv2.GaussianBlur(combined, (9, 9), 2)
     circles = cv2.HoughCircles(
         blurred, cv2.HOUGH_GRADIENT,
-        dp=1.2, minDist=12,
+        dp=1.2, minDist=15.3,
         param1=50, param2=7,
         minRadius=5, maxRadius=10,
     )

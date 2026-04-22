@@ -15,7 +15,7 @@ SCORE_POLYGON_REF_BY_SIDE = {
         (385, 146), # top-right
         (395, 165), # right
         (385, 205), # bottom-right
-        (342, 195), # bottom-left
+        (335, 195), # bottom-left
         (320, 165), # left
     ],
     "blue": [
@@ -23,8 +23,8 @@ SCORE_POLYGON_REF_BY_SIDE = {
         (1022, 126), # top-right
         (1040, 155), # right
         (1022, 185), # bottom-right
-        (974, 185), # bottom-left
-        (955, 155), # left
+        (960, 195), # bottom-left
+        (951, 155), # left
     ],
 }
 
@@ -35,7 +35,7 @@ ACTIVE_REGION_REF_BY_SIDE = {
 
 PARABOLA_MIN_POINTS      = 8
 PARABOLA_A_MAX           = 0.003
-PARABOLA_R2_MIN          = 0.50
+PARABOLA_R2_MIN          = 0.62
 SCORE_TRAIL_WINDOW       = 8
 SCORE_MIN_DESCENT        = 4
 SCORE_MIN_INSIDE_POINTS  = 2

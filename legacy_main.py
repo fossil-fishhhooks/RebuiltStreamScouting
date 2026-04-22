@@ -344,13 +344,13 @@ def fit_parabola(points):
     ss_res  = np.sum((ys - y_pred)**2)
     ss_tot  = np.sum((ys - ys.mean())**2)
     if ss_tot > 1e-6:
-        r2 = 1.0 - (ss_res / ss_tot)
+        r2 = float(1.0 - np.divide(ss_res, ss_tot))
     else:
         r2 = 0.0
     return a, b, c, r2
 
 
-def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids):
+def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids, track_lost=False):
     if oid in scored_track_ids or len(pts) < 2:
         return False
 
@@ -365,7 +365,7 @@ def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_scor
     if trail_bounced_out_of_polygon(recent_pts, score_polygon):
         return False
 
-    if not hit_bucket or not descending or not stable_inside or not id_cooldown_ok or not global_cooldown_ok:
+    if not track_lost or not hit_bucket or not descending or not stable_inside or not id_cooldown_ok or not global_cooldown_ok:
         return False
 
     return True
@@ -490,8 +490,10 @@ def run(video_path, side):
 
         # Scoring
         for oid, pts in trails.items():
+            track = tracker.tracks.get(oid)
+            track_lost = bool(track and track.ghost_count == 1)
             if check_parabola_score(
-                oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids
+                oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids, track_lost=track_lost
             ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx
