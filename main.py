@@ -17,9 +17,23 @@ HOLE_REF             = (445, 0, 1356 - 445, 491)
 MAX_TRAIL    = 38
 TRAIL_DECAY  = 0.95
 
-SCORE_REGION_REF_BY_SIDE = {
-    "red": (322, 136, 405, 195),
-    "blue": (950, 136, 1026, 185),
+SCORE_POLYGON_REF_BY_SIDE = {
+    "red": [
+        (342, 136),  # top-left
+        (385, 136),  # top-right
+        (405, 165),  # right
+        (385, 195),  # bottom-right
+        (342, 195),  # bottom-left
+        (322, 165),  # left
+    ],
+    "blue": [
+        (974, 126),  # top-left
+        (1022, 126), # top-right
+        (1046, 155), # right
+        (1022, 185), # bottom-right
+        (974, 185),  # bottom-left
+        (950, 155),  # left
+    ],
 }
 
 ACTIVE_REGION_REF_BY_SIDE = {
@@ -142,20 +156,14 @@ def in_region(point, region):
     x1, y1, x2, y2 = region
     return x1 <= x <= x2 and y1 <= y <= y2
 
-def score_region_hexagon(region):
-    x1, y1, x2, y2 = region
-    w = x2 - x1
-    h = y2 - y1
-    inset_x = int(w * 0.25)
-    mid_y = int(y1 + h / 2)
-    return [
-        (x1 + inset_x, y1),
-        (x2 - inset_x, y1),
-        (x2, mid_y),
-        (x2 - inset_x, y2),
-        (x1 + inset_x, y2),
-        (x1, mid_y),
-    ]
+def scale_polygon(points, sx, sy):
+    return [(int(round(x * sx)), int(round(y * sy))) for x, y in points]
+
+
+def polygon_bounds(points):
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
 
 def point_in_polygon(point, polygon):
     poly = np.array(polygon, dtype=np.int32)
@@ -205,13 +213,16 @@ def get_runtime_regions(frame_w, frame_h, side):
 
     hole_region = clamp_region(scale_region(HOLE_REF, crop_sx, crop_sy), crop_w, crop_h)
 
-    score_ref = SCORE_REGION_REF_BY_SIDE[side]
-    score_region = clamp_region(scale_region(score_ref, crop_sx, crop_sy), crop_w, crop_h)
+    score_polygon_ref = SCORE_POLYGON_REF_BY_SIDE[side]
+    score_polygon = [
+        clamp_region_for_slice((x, y, x + 1, y + 1), crop_w, crop_h)[:2]
+        for x, y in scale_polygon(score_polygon_ref, crop_sx, crop_sy)
+    ]
 
     active_ref = ACTIVE_REGION_REF_BY_SIDE[side]
     active_region = clamp_region(scale_region(active_ref, crop_sx, crop_sy), crop_w, crop_h)
 
-    return crop_region, hole_region, score_region, active_region
+    return crop_region, hole_region, score_polygon, active_region
 
 
 def blackout_hole(frame, hole_region):
@@ -257,15 +268,18 @@ def fit_parabola(points):
     y_pred  = A @ coeffs
     ss_res  = np.sum((ys - y_pred)**2)
     ss_tot  = np.sum((ys - ys.mean())**2)
-    r2      = 1.0 - ss_res / ss_tot if ss_tot > 1e-6 else 0.0
+    if ss_tot > 1e-6:
+        r2 = 1.0 - (ss_res / ss_tot)
+    else:
+        r2 = 0.0
     return a, b, c, r2
 
 
-def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_region):
+def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon):
     if len(pts) < 2:
         return False
 
-    in_score           = point_in_polygon(pts[-1], score_region_hexagon(score_region))
+    in_score           = point_in_polygon(pts[-1], score_polygon)
     id_cooldown_ok     = (frame_idx - last_score_frame_per_id[oid]) > ID_SCORE_COOLDOWN_FRAMES
     global_cooldown_ok = (frame_idx - last_score_frame) > SCORE_COOLDOWN_FRAMES
 
@@ -274,7 +288,7 @@ def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_scor
 
     prev_x, prev_y = pts[-2]
     cur_x, cur_y   = pts[-1]
-    x1, y1, x2, y2 = score_region
+    x1, y1, x2, y2 = polygon_bounds(score_polygon)
 
     enters_bucket = prev_y < y1 <= cur_y and x1 <= cur_x <= x2
     falling_down  = cur_y > prev_y
@@ -335,14 +349,14 @@ def run(video_path, side):
     if frame_w <= 0 or frame_h <= 0:
         raise RuntimeError("Could not read input video dimensions")
 
-    crop_region, hole_region, score_region, active_region = get_runtime_regions(frame_w, frame_h, side)
+    crop_region, hole_region, score_polygon, active_region = get_runtime_regions(frame_w, frame_h, side)
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     skip_frames = int(SKIP_SECONDS * fps)
 
     print(
         f"[regions] src={frame_w}x{frame_h} crop={crop_region} "
-        f"hole={hole_region} score={score_region} active={active_region}"
+        f"hole={hole_region} score={score_polygon} active={active_region}"
     )
 
     tracker  = Tracker()
@@ -404,7 +418,7 @@ def run(video_path, side):
         # Scoring
         for oid, pts in trails.items():
             if check_parabola_score(
-                oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_region
+                oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon
             ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx
@@ -416,8 +430,7 @@ def run(video_path, side):
         vis = blackout_outside_active(vis, active_region)
         vis = blackout_hole(vis, hole_region)
 
-        score_poly = np.array(score_region_hexagon(score_region), dtype=np.int32)
-        cv2.polylines(vis, [score_poly], True, (0, 255, 0), 2)
+        cv2.polylines(vis, [np.array(score_polygon, dtype=np.int32)], True, (0, 255, 0), 2)
 
         # Detected circles
         for (x, y, r) in circles:
