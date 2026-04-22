@@ -3,6 +3,7 @@ import numpy as np
 from collections import defaultdict
 import time
 import argparse
+import os
 
 
 SKIP_SECONDS    = 62
@@ -130,6 +131,25 @@ def in_region(point, region):
     x1, y1, x2, y2 = region
     return x1 <= x <= x2 and y1 <= y <= y2
 
+def score_region_hexagon(region):
+    x1, y1, x2, y2 = region
+    w = x2 - x1
+    h = y2 - y1
+    inset_x = int(w * 0.25)
+    mid_y = int(y1 + h / 2)
+    return [
+        (x1 + inset_x, y1),
+        (x2 - inset_x, y1),
+        (x2, mid_y),
+        (x2 - inset_x, y2),
+        (x1 + inset_x, y2),
+        (x1, mid_y),
+    ]
+
+def point_in_polygon(point, polygon):
+    poly = np.array(polygon, dtype=np.int32)
+    return cv2.pointPolygonTest(poly, point, False) >= 0
+
 def blackout_hole(frame):
     x1, y1, x2, y2 = HOLE
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), -1)
@@ -168,38 +188,24 @@ def fit_parabola(points):
 
 
 def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame):
-    if len(pts) < PARABOLA_MIN_POINTS:
+    if len(pts) < 2:
         return False
 
-    in_score           = in_region(pts[-1], SCORE_REGION)
+    in_score           = point_in_polygon(pts[-1], score_region_hexagon(SCORE_REGION))
     id_cooldown_ok     = (frame_idx - last_score_frame_per_id[oid]) > ID_SCORE_COOLDOWN_FRAMES
     global_cooldown_ok = (frame_idx - last_score_frame) > SCORE_COOLDOWN_FRAMES
 
     if not in_score or not id_cooldown_ok or not global_cooldown_ok:
         return False
 
-    result = fit_parabola(pts)
-    if result is None:
-        print(f"  [REJECT] ID {oid}: fit failed")
-        return False
+    prev_x, prev_y = pts[-2]
+    cur_x, cur_y   = pts[-1]
+    x1, y1, x2, y2 = SCORE_REGION
 
-    a, b, c, r2 = result
+    enters_bucket = prev_y < y1 <= cur_y and x1 <= cur_x <= x2
+    falling_down  = cur_y > prev_y
 
-    mid          = len(pts) // 2
-    y_early      = np.mean([p[1] for p in pts[:mid]])
-    y_late       = np.mean([p[1] for p in pts[mid:]])
-    opens_down   = a > PARABOLA_A_MAX
-    good_fit     = r2 > PARABOLA_R2_MIN
-    falling_down = y_late > y_early
-
-    if not (opens_down and good_fit and falling_down):
-        print(
-            f"  [REJECT] ID {oid} @ frame {frame_idx}: "
-            f"a={a:.5f} (need > {PARABOLA_A_MAX}), "
-            f"Rsquare={r2:.3f} (need > {PARABOLA_R2_MIN}), "
-            f"y_early={y_early:.1f} y_late={y_late:.1f} "
-            f"falling_down={falling_down}, opens_down={opens_down}, good_fit={good_fit}"
-        )
+    if not (enters_bucket and falling_down):
         return False
 
     return True
@@ -315,8 +321,8 @@ def run(video_path):
         vis = frame.copy()
         vis = blackout_hole(vis)
 
-        sx1, sy1, sx2, sy2 = SCORE_REGION
-        cv2.rectangle(vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+        score_poly = np.array(score_region_hexagon(SCORE_REGION), dtype=np.int32)
+        cv2.polylines(vis, [score_poly], True, (0, 255, 0), 2)
 
         # Detected circles
         for (x, y, r) in circles:
@@ -395,6 +401,9 @@ if __name__ == "__main__":
     parser.add_argument("--frame-drop", type=int)
     parser.add_argument("--video-file", type=str)
     args=parser.parse_args()
+
+    cv2.setNumThreads(os.cpu_count() or 1)
+
     if (args.side == "red"):
         SCORE_REGION = (332, 148, 395, 190)
     elif (args.side == "blue"):
