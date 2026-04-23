@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['Robot']
+
+roboflow:
+  workspace: frc-afrhw
+  project: frc-robot-detector
+  version: 1
+  license: MIT
+  url: https://universe.roboflow.com/frc-afrhw/frc-robot-detector/dataset/1
