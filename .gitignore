@@ -6,3 +6,5 @@ yolov8n.pt
 yolov8x.pt
 yolov8c.pt
 runs
+/dataset2/
+/dataset/
