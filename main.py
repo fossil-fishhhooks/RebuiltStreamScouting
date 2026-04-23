@@ -25,6 +25,7 @@ from vision import (
     fit_parabola,
     get_runtime_regions,
 )
+from robot_tracker import RobotTracker, detect_robots
 
 
 def run(video_path, side, frame_skip=FRAME_SKIP):
@@ -81,6 +82,9 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         frame   = crop_frame(frame, crop_region)
         circles = detect_circles(frame, hole_region, active_region)
         objects = tracker.update([(x, y) for (x, y, r) in circles])
+        robot_dets = detect_robots(frame, alliance="both")
+        live, dormant = robot_tracker.update(robot_dets)
+        frame = robot_tracker.draw(frame)
 
         for oid, (x, y) in objects.items():
             track = tracker.tracks.get(oid)
@@ -128,8 +132,8 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                 print(f"  [SCORE]  ID {oid} @ frame {frame_idx} -> total: {score}")
 
         vis = frame.copy()
-        vis = blackout_outside_active(vis, active_region)
-        vis = blackout_hole(vis, hole_region)
+        #vis = blackout_outside_active(vis, active_region)
+        #vis = blackout_hole(vis, hole_region)
 
         cv2.polylines(vis, [np.array(score_polygon, dtype=np.int32)], True, (0, 255, 0), 2)
 
@@ -212,6 +216,8 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
     return score
 
 
+
+robot_tracker = RobotTracker()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Track")
     parser.add_argument("--side", type=str, choices=["red", "blue"], default="red")
