@@ -1,10 +1,15 @@
 from ultralytics import YOLO
 
-model = YOLO("yolov8c.pt")
+def main():
+    model = YOLO("yolov8n.pt")
+    model.train(
+        data="dataset2/data.yaml",
+        epochs=50,
+        imgsz=640,
+        device=0, #  set to 'mps' on apple silicon, and 'cpu' otherwise. 0 means GPU
+        workers=18,
+        batch=24
+    )
 
-model.train(
-    data="dataset2/data.yaml",
-    epochs=50,
-    imgsz=640,
-    device=0  #device=0 for CUDA, device='mps' for apple silicon, device='cpu' if youre a bum. remove this line for auto detect
-)
+if __name__ == "__main__":
+    main()
