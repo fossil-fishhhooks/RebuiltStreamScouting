@@ -46,7 +46,7 @@ except ImportError:
     ROBOT_PROCESS_NOISE     = 5e-2   # Kalman Q scalar
     ROBOT_MEASUREMENT_NOISE = 0.5   # Kalman R scalar
     # ---- YOLO ----
-    ROBOT_YOLO_MODEL   = "yolov8c.pt"  # model. SWAP TO yolov8n if your laptop is a potato
+    ROBOT_YOLO_MODEL   = "best.pt"  # model. SWAP TO yolov8n if your laptop is a potato
     ROBOT_YOLO_CONF    = 0.75          # detection confidence threshold
     ROBOT_YOLO_CLASSES = None          # None = all classes; [0] = person only, etc.
     ROBOT_YOLO_IMGSZ   = 640           # inference resolution (px)

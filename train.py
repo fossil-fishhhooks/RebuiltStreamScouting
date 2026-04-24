@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 def main():
-    model = YOLO("yolov8n.pt")
+    model = YOLO("best.pt")
     model.train(
         data="dataset2/data.yaml",
         epochs=50,
