@@ -1,5 +1,6 @@
 SKIP_SECONDS    = 4  #62
 MAX_DIST        = 60
+APRILTAG_DICTIONARY = "DICT_APRILTAG_36h11"
 
 # Regions are tuned against this source resolution and scaled per input video.
 REFERENCE_FRAME_SIZE = (1366, 768)

@@ -21,6 +21,7 @@ from vision import (
     blackout_outside_active,
     check_parabola_score,
     crop_frame,
+    detect_apriltags,
     detect_circles,
     fit_parabola,
     get_runtime_regions,
@@ -61,6 +62,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
     last_fps_update = time.time()
 
     frame_idx = 0
+    apriltag_checked = False
 
     while True:
         # grab() seeks without decoding, much faster than read() for skipped frames
@@ -72,6 +74,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         if not ret:
             break
         frame_idx += 1
+        full_frame = frame
 
         if frame_idx < skip_frames:
             continue
@@ -202,6 +205,16 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         cv2.putText(vis, f"{display_fps:.1f}/{(60 / max(1, frame_skip)):.0f} fps  tracks: {len(tracker.tracks)}",
                     (460, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
+
+        if not apriltag_checked and frame_idx == 240:
+            apriltags = [tag for tag in detect_apriltags(full_frame) if tag.get("id") == 11]
+            apriltag_checked = True
+            if apriltags:
+                print(f"[apriltag] frame 240 found tag 11 ({len(apriltags)} detection(s))")
+                cv2.putText(vis, "AprilTag 11 found", (460, 86),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 1)
+            else:
+                print("[apriltag] frame 240 tag 11 not found")
 
         cv2.imshow("tracking", vis)
         if cv2.waitKey(1) & 0xFF == 27:

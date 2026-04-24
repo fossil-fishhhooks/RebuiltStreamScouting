@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
+from functools import lru_cache
 
 from config import (
+    APRILTAG_DICTIONARY,
     ACTIVE_REGION_REF_BY_SIDE,
     BOUNCE_OUT_RISE,
     CROP_REF,
@@ -184,6 +186,100 @@ def is_approximately_yellow(point, frame):
     hsv = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0][0]
     h_val, s_val, v_val = hsv
     return 20 <= h_val <= 40 and s_val >= 120 and v_val >= 120
+
+
+@lru_cache(maxsize=1)
+def _make_apriltag_detector():
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return []
+
+    family_names = (APRILTAG_DICTIONARY or "DICT_APRILTAG_36h11",)
+    params = aruco.DetectorParameters()
+    if hasattr(aruco, "CORNER_REFINE_APRILTAG"):
+        params.cornerRefinementMethod = aruco.CORNER_REFINE_APRILTAG
+
+    if hasattr(params, "aprilTagQuadDecimate"):
+        params.aprilTagQuadDecimate = 0.0
+    if hasattr(params, "aprilTagQuadSigma"):
+        params.aprilTagQuadSigma = 0.0
+    if hasattr(params, "aprilTagMinWhiteBlackDiff"):
+        params.aprilTagMinWhiteBlackDiff = 3
+    if hasattr(params, "aprilTagMinClusterPixels"):
+        params.aprilTagMinClusterPixels = 1
+    if hasattr(params, "aprilTagMaxLineFitMse"):
+        params.aprilTagMaxLineFitMse = 30.0
+
+    detectors = []
+    for family_name in family_names:
+        dictionary_id = getattr(aruco, family_name, None)
+        if dictionary_id is None:
+            continue
+        dictionary = aruco.getPredefinedDictionary(dictionary_id)
+        if hasattr(aruco, "ArucoDetector"):
+            detectors.append((family_name, aruco.ArucoDetector(dictionary, params)))
+
+    return detectors
+
+
+def detect_apriltags(frame):
+    detectors = _make_apriltag_detector()
+    if not detectors:
+        return []
+
+    aruco = cv2.aruco
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    scales = (1.0, 1.5, 2.0)
+    detections = []
+    seen = set()
+    for scale in scales:
+        scaled = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        for family_name, detector in detectors:
+            corners, ids, _ = detector.detectMarkers(scaled)
+
+            if ids is None:
+                continue
+
+            for marker_id, marker_corners in zip(ids.flatten().tolist(), corners):
+                pts = np.round(marker_corners.reshape(-1, 2) / scale).astype(int)
+                pts[:, 0] = np.clip(pts[:, 0], 0, max(0, w - 1))
+                pts[:, 1] = np.clip(pts[:, 1], 0, max(0, h - 1))
+                center = tuple(int(v) for v in np.round(pts.mean(axis=0)).astype(int))
+                key = (family_name, int(marker_id), center[0] // 4, center[1] // 4)
+                if key in seen:
+                    continue
+                seen.add(key)
+                detections.append(
+                    {
+                        "id": int(marker_id),
+                        "family": family_name,
+                        "corners": [tuple(map(int, p)) for p in pts],
+                        "center": center,
+                    }
+                )
+    return detections
+
+
+def draw_apriltag_detections(frame, detections):
+    for detection in detections:
+        corners = np.array(detection["corners"], dtype=np.int32).reshape((-1, 1, 2))
+        center = detection["center"]
+        tag_id = detection["id"]
+        family = detection.get("family", "apriltag")
+        cv2.polylines(frame, [corners], True, (255, 0, 255), 2)
+        cv2.circle(frame, center, 4, (255, 0, 255), -1)
+        cv2.putText(
+            frame,
+            f"{family}:{tag_id}",
+            (center[0] + 6, center[1] - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    return frame
 
 
 # PARABOLIC CHECK
