@@ -29,7 +29,7 @@ class Track:
 
     def predict(self):
         pred = self.kf.predict()
-        return int(pred[0]), int(pred[1])
+        return int(pred[0][0]), int(pred[1][0])
 
     def update(self, x, y):
         self.kf.correct(np.array([[x], [y]], dtype=np.float32))
@@ -37,7 +37,7 @@ class Track:
 
     def position(self):
         s = self.kf.statePost
-        return int(s[0]), int(s[1])
+        return int(s[0][0]), int(s[1][0])
 
 
 class Tracker:
