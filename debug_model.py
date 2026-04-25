@@ -5,13 +5,18 @@ from tqdm import tqdm
 
 MODEL_PATH    = "best.pt"
 VIDEO_PATH    = "Q18.mp4"
+OUTPUT_PATH   = "test.avi"
 TILE_SIZE     = 640                    # training res
 OVERLAP       = 0.35                   # fraction of tile_size that adjacent tiles share
 CONF_THRESH   = 0.20                   # minimum confidence for a detection
 MAX_BOX_AREA  = 640 * 640 * 0.06      # max allowed box area in pixels
 DISPLAY_SCALE = 0.5                    # resize factor for the preview window only
 
-model = YOLO(MODEL_PATH) 
+SAVE_OUT      = True
+
+model = YOLO(MODEL_PATH)
+
+
 
 
 def generate_tiles(w, h):
@@ -81,6 +86,12 @@ def draw_boxes(frame, dets, color, thickness=1):
 cap = cv2.VideoCapture(VIDEO_PATH)
 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+if SAVE_OUT:
+    fps    = cap.get(cv2.CAP_PROP_FPS)
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    writer = cv2.VideoWriter(OUTPUT_PATH, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+
 with tqdm(total=total) as pbar:
     while cap.isOpened():
         ret, frame = cap.read()
@@ -96,9 +107,15 @@ with tqdm(total=total) as pbar:
         draw_boxes(frame, nms50, (255, 0, 0), 2)
         draw_boxes(frame, nms35, (0, 255, 0), 2)
 
-        cv2.imshow("tiled", cv2.resize(frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE))
-        if cv2.waitKey(1) & 0xFF == 27: break                                          # ESC to quit early
+        #
+        if SAVE_OUT:
+            writer.write(frame)
+        else:
+            cv2.imshow("tiled", cv2.resize(frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE))
+            if cv2.waitKey(1) & 0xFF == 27: break                                          # ESC to quit early
         pbar.update(1)
 
 cap.release()
+if SAVE_OUT:
+    writer.release()
 cv2.destroyAllWindows()
