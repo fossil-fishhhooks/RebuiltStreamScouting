@@ -1,20 +1,29 @@
 from ultralytics import YOLO
 
 def main():
-    model = YOLO("last.pt") # change to best
+    model = YOLO("yolov8n.pt") # change to best
     model.train(
     data="dataset2/data.yaml",
-    epochs=190,
-    imgsz=640,
+    epochs=100,
     device=0,
-    workers=10,
-    batch=28,
-    hsv_h=0.015,   # hue shift — different lighting
-    hsv_s=0.7,     # saturation — washed out/dark venues  
-    hsv_v=0.4,     # brightness — overexposed/dark
-    scale=0.9,     # zoom out — makes robots appear smaller
-    mosaic=1.0,    # already on by default, keeps it
-    fliplr=0.5,    # horizontal flip
+    workers=8,
+    batch=6,
+    imgsz=1280,
+
+    # augmentations
+    mosaic=1.0,
+    mixup=0.1,
+    copy_paste=0.3,
+    scale=0.5,
+    translate=0.1,
+    fliplr=0.5,
+
+    hsv_h=0.015,
+    hsv_s=0.7,
+    hsv_v=0.4,
+
+
+    box=10.0,
 )
 if __name__ == "__main__":
     main()
