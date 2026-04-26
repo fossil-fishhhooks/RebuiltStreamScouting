@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from functools import lru_cache
+from scipy.optimize import least_squares
 
 from config import (
     APRILTAG_DICTIONARY,
@@ -16,7 +17,7 @@ from config import (
     SCORE_MIN_INSIDE_POINTS,
     SCORE_POLYGON_REF_BY_SIDE,
     SCORE_TRAIL_WINDOW,
-    PARABOLA_A_MIN
+
 )
 
 
@@ -283,29 +284,45 @@ def draw_apriltag_detections(frame, detections):
 
 
 # PARABOLIC CHECK
-def fit_parabola(points):
-    if len(points) < PARABOLA_MIN_POINTS:
-        return None
-    xs = np.array([p[0] for p in points], dtype=float)
-    ys = np.array([p[1] for p in points], dtype=float)
-    xs_norm = xs - xs.mean()
-    A = np.column_stack([xs_norm**2, xs_norm, np.ones_like(xs_norm)])
-    try:
-        coeffs, _, _, _ = np.linalg.lstsq(A, ys, rcond=None)
-    except np.linalg.LinAlgError:
-        return None
-    a, b, c = coeffs
-    y_pred = A @ coeffs
-    ss_res = np.sum((ys - y_pred) ** 2)
-    ss_tot = np.sum((ys - ys.mean()) ** 2)
-    if ss_tot > 1e-6:
-        r2 = float(1.0 - np.divide(ss_res, ss_tot))
-    else:
-        r2 = 0.0
+def fit_conic(xs, ys):
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
 
-    if a<PARABOLA_A_MIN:
-        r2=0 # scuffed method
-    return a, b, c, r2
+    def residuals(p):
+        a, b, c, theta = p
+        b=-1
+        ct, st = np.cos(theta), np.sin(theta)
+        xp = xs * ct - ys * st
+        yp = xs * st + ys * ct
+        return a * xp**2 + b * yp + c
+
+    p0 = [0.01, -1.0, 0.0, 0.0]
+    result = least_squares(residuals, p0, method="lm", max_nfev=400)
+    a, b, c, theta = result.x
+
+    err = float(np.sqrt(np.mean(result.fun**2)))
+    return (a, b, c, theta), err
+
+
+def solve_y(a, b, c, theta, x):
+    ct, st = np.cos(theta), np.sin(theta)
+    A = a * st**2
+    B = -2 * a * x * ct * st + b * ct
+    C = a * x**2 * ct**2 + b * x * st + c
+
+    if abs(A) < 1e-10:
+        # linear in y
+        if abs(B) < 1e-10:
+            return None
+        y = -C / B
+        return (y, y)
+
+    disc = B**2 - 4*A*C
+    if disc < 0:
+        return None
+
+    sq = np.sqrt(disc)
+    return ((-B + sq) / (2*A), (-B - sq) / (2*A))
 
 
 def check_parabola_score(oid, pts, frame_idx, last_score_frame_per_id, last_score_frame, score_polygon, scored_track_ids, track_lost=False):

@@ -24,8 +24,9 @@ from vision import (
     crop_frame,
     detect_apriltags,
     detect_circles,
-    fit_parabola,
+    fit_conic,
     get_runtime_regions,
+solve_y
 )
 
 
@@ -250,20 +251,27 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
 
         for oid, pts in trails.items():
             if len(pts) >= PARABOLA_MIN_POINTS:
-                result = fit_parabola(pts)
-                if result:
-                    a, b, c, r2 = result
-                    xs     = np.array([p[0] for p in pts])
-                    x_mean = xs.mean()
-                    col    = (0, 200, 255) if r2 > PARABOLA_R2_MIN else (80, 80, 80)
-                    for xi in range(int(xs.min()), int(xs.max()), 2):
-                        xn  = xi - x_mean
-                        yi  = int(a * xn**2 + b * xn + c)
-                        xn2 = xi + 2 - x_mean
-                        yi2 = int(a * xn2**2 + b * xn2 + c)
-                        h, w = vis.shape[:2]
-                        if 0 <= yi < h and 0 <= yi2 < h:
-                            cv2.line(vis, (xi, yi), (xi + 2, yi2), col, 1)
+                xs = np.array([p[0] for p in pts])
+                ys = np.array([p[1] for p in pts])
+                params, err = fit_conic(xs, ys)
+                a, b, c, theta = params
+                print(f"[fit] oid={oid} err={err:.4f} a={a:.4f} b={b:.4f} c={c:.4f} theta={np.degrees(theta):.1f}° pts={len(pts)}")
+                print(f"      xs={int(xs.min())}..{int(xs.max())}  ys={int(ys.min())}..{int(ys.max())}")
+
+                col = (0, 200, 255) if err < PARABOLA_R2_MIN else (80, 80, 80)
+                h, w = vis.shape[:2]
+
+                any_drawn = 0
+                for xi in range(int(xs.min()), int(xs.max()), 2):
+                    sol = solve_y(a, b, c, theta, float(xi))
+                    if sol is None:
+                        continue
+                    for y in sol:
+                        yi = int(round(y))
+                        if 0 <= yi < h:
+                            cv2.circle(vis, (xi, yi), 1, col, -1)
+
+
 
         for tid, track in tracker.tracks.items():
             if track.ghost_count > 0:
