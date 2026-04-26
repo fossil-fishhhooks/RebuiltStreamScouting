@@ -10,10 +10,11 @@ from config import (
     FRAME_SKIP,
     MAX_TRAIL,
     PARABOLA_MIN_POINTS,
-    PARABOLA_R2_MIN,
+    PARABOLA_FIT_ERROR,
     SCORE_COOLDOWN_FRAMES,
     SKIP_SECONDS,
     TRAIL_DECAY,
+    SCORE_POLYGON_REF_BY_SIDE,
 )
 from tracker import Tracker
 from vision import (
@@ -21,11 +22,113 @@ from vision import (
     blackout_outside_active,
     check_parabola_score,
     crop_frame,
+    detect_apriltags,
     detect_circles,
-    fit_parabola,
+    fit_conic,
     get_runtime_regions,
+solve_y
 )
 from robot_tracker import RobotTracker, detect_robots
+
+
+def get_frame_at_index(cap, frame_idx):
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    return frame if ret else None
+
+
+def polygon_center(polygon):
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    return (np.mean(xs), np.mean(ys))
+
+
+def adjust_polygon_for_apriltag(video_path, side, frame_240_offset=None):
+    if frame_240_offset is None:
+        try:
+            ref_cap = cv2.VideoCapture("Q18.mp4")
+            ref_frame = get_frame_at_index(ref_cap, 240)
+            ref_cap.release()
+
+            if ref_frame is not None:
+                apriltags = detect_apriltags(ref_frame)
+                tag11_ref = [tag for tag in apriltags if tag.get("id") == 11]
+
+                if tag11_ref:
+                    ref_frame_h, ref_frame_w = ref_frame.shape[:2]
+                    crop_region, _, _, _ = get_runtime_regions(ref_frame_w, ref_frame_h, side)
+                    crop_x1, crop_y1, crop_x2, crop_y2 = crop_region
+
+                    tag11_center = tag11_ref[0]["center"]
+                    tag11_in_crop = (tag11_center[0] - crop_x1, tag11_center[1] - crop_y1)
+
+                    ref_polygon = SCORE_POLYGON_REF_BY_SIDE[side]
+                    _, _, ref_score_polygon, _ = get_runtime_regions(ref_frame_w, ref_frame_h, side)
+                    runtime_center = polygon_center(ref_score_polygon)
+
+                    frame_240_offset = (
+                        runtime_center[0] - tag11_in_crop[0],
+                        runtime_center[1] - tag11_in_crop[1]
+                    )
+                    print(f"[AprilTag] Reference offset from Q18.mp4: {frame_240_offset}")
+        except Exception as e:
+            print(f"[AprilTag] Could not calculate reference offset: {e}")
+            return None
+
+    if frame_240_offset is None:
+        return None
+
+    try:
+        cap = cv2.VideoCapture(video_path)
+        frame = get_frame_at_index(cap, 240)
+        cap.release()
+
+        if frame is None:
+            print("[AprilTag] Could not read frame 240 from video")
+            return None
+
+        apriltags = detect_apriltags(frame)
+        tag11_detections = [tag for tag in apriltags if tag.get("id") == 11]
+
+        if not tag11_detections:
+            print("[AprilTag] AprilTag 11 not found at frame 240")
+            return None
+
+        frame_h, frame_w = frame.shape[:2]
+        crop_region, hole_region, score_polygon, active_region = get_runtime_regions(frame_w, frame_h, side)
+        crop_x1, crop_y1, crop_x2, crop_y2 = crop_region
+
+        tag11_center = tag11_detections[0]["center"]
+        tag11_in_crop = (tag11_center[0] - crop_x1, tag11_center[1] - crop_y1)
+        target_polygon_center = (
+            tag11_in_crop[0] + frame_240_offset[0],
+            tag11_in_crop[1] + frame_240_offset[1]
+        )
+
+        current_center = polygon_center(score_polygon)
+        translation = (
+            target_polygon_center[0] - current_center[0],
+            target_polygon_center[1] - current_center[1]
+        )
+
+        ref_polygon = SCORE_POLYGON_REF_BY_SIDE[side]
+        ref_w, ref_h = 1366, 768
+        sx = frame_w / ref_w
+        sy = frame_h / ref_h
+
+        adjusted_polygon = [
+            (int(x * sx + translation[0]), int(y * sy + translation[1]))
+            for x, y in ref_polygon
+        ]
+
+        print(f"[AprilTag] Found AprilTag 11 at frame 240 center: {tag11_center}")
+        print(f"[AprilTag] Adjusted polygon by translation: ({translation[0]:.1f}, {translation[1]:.1f})")
+
+        return adjusted_polygon
+
+    except Exception as e:
+        print(f"[AprilTag] Error adjusting polygon: {e}")
+        return None
 
 
 def run(video_path, side, frame_skip=FRAME_SKIP):
@@ -73,6 +176,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         if not ret:
             break
         frame_idx += 1
+        full_frame = frame
 
         if frame_idx < skip_frames:
             continue
@@ -151,20 +255,27 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
 
         for oid, pts in trails.items():
             if len(pts) >= PARABOLA_MIN_POINTS:
-                result = fit_parabola(pts)
-                if result:
-                    a, b, c, r2 = result
-                    xs     = np.array([p[0] for p in pts])
-                    x_mean = xs.mean()
-                    col    = (0, 200, 255) if r2 > PARABOLA_R2_MIN else (80, 80, 80)
-                    for xi in range(int(xs.min()), int(xs.max()), 2):
-                        xn  = xi - x_mean
-                        yi  = int(a * xn**2 + b * xn + c)
-                        xn2 = xi + 2 - x_mean
-                        yi2 = int(a * xn2**2 + b * xn2 + c)
-                        h, w = vis.shape[:2]
-                        if 0 <= yi < h and 0 <= yi2 < h:
-                            cv2.line(vis, (xi, yi), (xi + 2, yi2), col, 1)
+                xs = np.array([p[0] for p in pts])
+                ys = np.array([p[1] for p in pts])
+                params, err = fit_conic(xs, ys)
+                a, b, c, theta = params
+                print(f"[fit] oid={oid} err={err:.4f} a={a:.4f} b={b:.4f} c={c:.4f} theta={np.degrees(theta):.1f}° pts={len(pts)}")
+                print(f"      xs={int(xs.min())}..{int(xs.max())}  ys={int(ys.min())}..{int(ys.max())}")
+
+                col = (0, 200, 255) if err < PARABOLA_FIT_ERROR else (80, 80, 80)
+                h, w = vis.shape[:2]
+
+                any_drawn = 0
+                for xi in range(int(xs.min()), int(xs.max()), 2):
+                    sol = solve_y(a, b, c, theta, float(xi))
+                    if sol is None:
+                        continue
+                    for y in sol:
+                        yi = int(round(y))
+                        if 0 <= yi < h:
+                            cv2.circle(vis, (xi, yi), 1, col, -1)
+
+
 
         for tid, track in tracker.tracks.items():
             if track.ghost_count > 0:
@@ -178,19 +289,19 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.putText(vis, str(oid), (x + 5, y - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # draw launch point markers for scored shots, persists for the rest of the video
-        for oid, (ox, oy) in origins.items():
-            arm, gap = 8, 3
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                cv2.line(
-                    vis,
-                    (ox + dx * gap,         oy + dy * gap),
-                    (ox + dx * (arm + gap), oy + dy * (arm + gap)),
-                    (0, 200, 255), 2, cv2.LINE_AA,
-                )
-            cv2.circle(vis, (ox, oy), 3, (0, 200, 255), -1, cv2.LINE_AA)
-            cv2.putText(vis, f"#{oid}", (ox + arm + gap + 2, oy + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1, cv2.LINE_AA)
+        # # draw launch point markers for scored shots, persists for the rest of the video
+        # for oid, (ox, oy) in origins.items():
+        #     arm, gap = 8, 3
+        #     for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        #         cv2.line(
+        #             vis,
+        #             (ox + dx * gap,         oy + dy * gap),
+        #             (ox + dx * (arm + gap), oy + dy * (arm + gap)),
+        #             (0, 200, 255), 2, cv2.LINE_AA,
+        #         )
+        #     cv2.circle(vis, (ox, oy), 3, (0, 200, 255), -1, cv2.LINE_AA)
+        #     cv2.putText(vis, f"#{oid}", (ox + arm + gap + 2, oy + 4),
+        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1, cv2.LINE_AA)
 
         t_end = time.perf_counter()
         frame_times.append(t_end - t_start)
@@ -206,6 +317,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         cv2.putText(vis, f"{display_fps:.1f}/{(60 / max(1, frame_skip)):.0f} fps  tracks: {len(tracker.tracks)}",
                     (460, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
+
 
         cv2.imshow("tracking", vis)
         if cv2.waitKey(1) & 0xFF == 27:

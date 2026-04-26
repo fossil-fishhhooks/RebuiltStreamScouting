@@ -1,5 +1,6 @@
 SKIP_SECONDS    = 4  #62
 MAX_DIST        = 60
+APRILTAG_DICTIONARY = "DICT_APRILTAG_36h11"
 
 # Regions are tuned against this source resolution and scaled per input video.
 REFERENCE_FRAME_SIZE = (1366, 768)
@@ -34,8 +35,7 @@ ACTIVE_REGION_REF_BY_SIDE = {
 }
 
 PARABOLA_MIN_POINTS      = 8
-PARABOLA_A_MIN           = 0.003
-PARABOLA_R2_MIN          = 0.62
+PARABOLA_FIT_ERROR       = 4.4
 SCORE_TRAIL_WINDOW       = 8
 SCORE_MIN_DESCENT        = 4
 SCORE_MIN_INSIDE_POINTS  = 2
