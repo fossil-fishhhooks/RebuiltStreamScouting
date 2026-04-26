@@ -3,7 +3,7 @@ import numpy as np
 from ultralytics import YOLO
 from tqdm import tqdm
 
-MODEL_PATH    = "best-6k-2.pt"
+MODEL_PATH    = "YOLOv8n-6k-variated.pt"
 VIDEO_PATH    = "Q18.mp4"
 OUTPUT_PATH   = "test.avi"
 TILE_SIZE     = 640                    # training res
