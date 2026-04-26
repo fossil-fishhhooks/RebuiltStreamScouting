@@ -3,13 +3,13 @@ import numpy as np
 from ultralytics import YOLO
 from tqdm import tqdm
 
-MODEL_PATH    = "best.pt"
+MODEL_PATH    = "best-6k-2.pt"
 VIDEO_PATH    = "Q18.mp4"
 OUTPUT_PATH   = "test.avi"
 TILE_SIZE     = 640                    # training res
-OVERLAP       = 0.46                   # fraction of tile_size that adjacent tiles share
+OVERLAP       = 0.65                   # fraction of tile_size that adjacent tiles share
 CONF_THRESH   = 0.15                   # minimum confidence for a detection
-MAX_BOX_AREA  = 640 * 640 * 0.06      # max allowed box area in pixels
+MAX_BOX_AREA  = 640 * 640 * 0.06       # max allowed box area in pixels
 DISPLAY_SCALE = 0.5                    # resize factor for the preview window only
 
 SAVE_OUT      = True
@@ -71,7 +71,7 @@ def infer(frame):
             if (gx2-gx1) * (gy2-gy1) > MAX_BOX_AREA: continue  # reject oversized boxes
             raw.append([gx1, gy1, gx2, gy2, conf, int(cls)]) # accumulate all surviving detections across all tiles
 
-    return raw, nms(raw, 0.52), nms(raw, 0.37), tiles_coords # raw = all detections; nms50 = loose merge; nms35 = tight merge; coords for tile debug drawing
+    return raw, nms(raw, 0.72), nms(raw, 0.57), tiles_coords # raw = all detections; nms50 = loose merge; nms35 = tight merge; coords for tile debug drawing
 
 
 def draw_boxes(frame, dets, color, thickness=1):
