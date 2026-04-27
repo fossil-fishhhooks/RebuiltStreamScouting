@@ -130,7 +130,6 @@ def adjust_polygon_for_apriltag(video_path, side, frame_240_offset=None):
         print(f"[AprilTag] Error adjusting polygon: {e}")
         return None
 
-
 def run(video_path, side, frame_skip=FRAME_SKIP):
     cap = cv2.VideoCapture(video_path)
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -148,52 +147,58 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         f"hole={hole_region} score={score_polygon} active={active_region}"
     )
 
-    tracker  = Tracker()
-    trails   = defaultdict(list)  # smoothed position history per track
-    t_alphas = defaultdict(list)  # opacity per trail point, decays over time
-    first_seen = {}               # first position ever seen for each track, before trail decay can erase it
-    origins    = {}               # launch point per track, only shown once confirmed scored
+    tracker    = Tracker()
+    trails     = defaultdict(list)
+    t_alphas   = defaultdict(list)
+    first_seen = {}
+    origins    = {}
 
     score                   = 0
     last_score_frame        = -SCORE_COOLDOWN_FRAMES
     last_score_frame_per_id = defaultdict(lambda: -10)
     scored_track_ids        = set()
 
-    fps_window   = 30
-    frame_times  = []
-    display_fps  = 0.0
+    fps_window      = 30
+    frame_times     = []
+    display_fps     = 0.0
     last_fps_update = time.time()
-
-    frame_idx = 0
+    frame_idx       = 0
+    crop_x, crop_y  = crop_region[0], crop_region[1]
 
     while True:
-        # grab() seeks without decoding, much faster than read() for skipped frames
         for _ in range(max(0, frame_skip - 1)):
             cap.grab()
             frame_idx += 1
 
-        ret, frame = cap.read()
+        ret, raw_frame = cap.read()
         if not ret:
             break
         frame_idx += 1
-        full_frame = frame
 
         if frame_idx < skip_frames:
             continue
 
         t_start = time.perf_counter()
 
-        frame   = crop_frame(frame, crop_region)
+        frame = crop_frame(raw_frame, crop_region)
+        t_crop = time.perf_counter()
+
         circles = detect_circles(frame, hole_region, active_region)
+        t_circles = time.perf_counter()
+
         objects = tracker.update([(x, y) for (x, y, r) in circles])
-        crop_x, crop_y = crop_region[0], crop_region[1]
-        robot_dets_full = detect_robots(full_frame, alliance="both")
+        t_track = time.perf_counter()
+
+        robot_dets_full = detect_robots(raw_frame, alliance="both")
         robot_dets = [
             (cx - crop_x, cy - crop_y, w, h, alliance)
             for (cx, cy, w, h, alliance) in robot_dets_full
         ]
+        t_robots = time.perf_counter()
+
         live, dormant = robot_tracker.update(robot_dets)
         frame = robot_tracker.draw(frame)
+        t_rtrack = time.perf_counter()
 
         for oid, (x, y) in objects.items():
             track = tracker.tracks.get(oid)
@@ -206,7 +211,6 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                     trails[oid].pop(0)
                     t_alphas[oid].pop(0)
 
-        # multiply all alphas by decay factor each frame, drop points that have faded out
         for oid in list(t_alphas.keys()):
             t_alphas[oid] = [a * TRAIL_DECAY for a in t_alphas[oid]]
             combined = [(p, a) for p, a in zip(trails[oid], t_alphas[oid]) if a > 0.05]
@@ -222,28 +226,20 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             track      = tracker.tracks.get(oid)
             track_lost = bool(track and track.ghost_count == 1)
             if check_parabola_score(
-                    oid,
-                    pts,
-                    frame_idx,
-                    last_score_frame_per_id,
-                    last_score_frame,
-                    score_polygon,
-                    scored_track_ids,
+                    oid, pts, frame_idx, last_score_frame_per_id,
+                    last_score_frame, score_polygon, scored_track_ids,
                     track_lost=track_lost,
             ):
                 score += 1
                 last_score_frame_per_id[oid] = frame_idx
                 last_score_frame             = frame_idx
                 scored_track_ids.add(oid)
-                # save the launch point now that we know it was a scored shot
                 if oid not in origins and oid in first_seen:
                     origins[oid] = first_seen[oid]
                 print(f"  [SCORE]  ID {oid} @ frame {frame_idx} -> total: {score}")
+        t_score = time.perf_counter()
 
         vis = frame.copy()
-        #vis = blackout_outside_active(vis, active_region)
-        #vis = blackout_hole(vis, hole_region)
-
         cv2.polylines(vis, [np.array(score_polygon, dtype=np.int32)], True, (0, 255, 0), 2)
 
         for (x, y, r) in circles:
@@ -267,20 +263,16 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
                 print(f"[fit] oid={oid} err={err:.4f} a={a:.4f} b={b:.4f} c={c:.4f} theta={np.degrees(theta):.1f}° pts={len(pts)}")
                 print(f"      xs={int(xs.min())}..{int(xs.max())}  ys={int(ys.min())}..{int(ys.max())}")
 
-                col = (0, 200, 255) if err < PARABOLA_FIT_ERROR else (80, 80, 80)
-                h, w = vis.shape[:2]
-
-                any_drawn = 0
+                col   = (0, 200, 255) if err < PARABOLA_FIT_ERROR else (80, 80, 80)
+                vis_h = vis.shape[0]
                 for xi in range(int(xs.min()), int(xs.max()), 2):
                     sol = solve_y(a, b, c, theta, float(xi))
                     if sol is None:
                         continue
-                    for y in sol:
-                        yi = int(round(y))
-                        if 0 <= yi < h:
+                    for yi_f in sol:
+                        yi = int(round(yi_f))
+                        if 0 <= yi < vis_h:
                             cv2.circle(vis, (xi, yi), 1, col, -1)
-
-
 
         for tid, track in tracker.tracks.items():
             if track.ghost_count > 0:
@@ -293,20 +285,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.circle(vis, (x, y), 6, (0, 0, 255), -1)
             cv2.putText(vis, str(oid), (x + 5, y - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        # # draw launch point markers for scored shots, persists for the rest of the video
-        # for oid, (ox, oy) in origins.items():
-        #     arm, gap = 8, 3
-        #     for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        #         cv2.line(
-        #             vis,
-        #             (ox + dx * gap,         oy + dy * gap),
-        #             (ox + dx * (arm + gap), oy + dy * (arm + gap)),
-        #             (0, 200, 255), 2, cv2.LINE_AA,
-        #         )
-        #     cv2.circle(vis, (ox, oy), 3, (0, 200, 255), -1, cv2.LINE_AA)
-        #     cv2.putText(vis, f"#{oid}", (ox + arm + gap + 2, oy + 4),
-        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1, cv2.LINE_AA)
+        t_draw = time.perf_counter()
 
         t_end = time.perf_counter()
         frame_times.append(t_end - t_start)
@@ -317,12 +296,22 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             display_fps     = 1.0 / (sum(frame_times) / len(frame_times))
             last_fps_update = now
 
+        print(
+            f"crop={t_crop-t_start:.3f} "
+            f"circles={t_circles-t_crop:.3f} "
+            f"track={t_track-t_circles:.3f} "
+            f"robots={t_robots-t_track:.3f} "
+            f"rtrack={t_rtrack-t_robots:.3f} "
+            f"score={t_score-t_rtrack:.3f} "
+            f"draw={t_draw-t_score:.3f} "
+            f"total={t_end-t_start:.3f}"
+        )
+
         cv2.putText(vis, f"Score: {score}", (460, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(vis, f"{display_fps:.1f}/{(60 / max(1, frame_skip)):.0f} fps  tracks: {len(tracker.tracks)}",
                     (460, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
-
 
         cv2.imshow("tracking", vis)
         if cv2.waitKey(1) & 0xFF == 27:
