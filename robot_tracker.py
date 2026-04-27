@@ -13,12 +13,13 @@ Requirements:
 """
 
 from __future__ import annotations
+from robot_detector import detect as _tiled_detect
 
 import cv2
 import numpy as np
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+
 
 # ---------------------------------------------------------------------------
 # Tunables — override in config.py if you add them there
@@ -45,62 +46,22 @@ except ImportError:
     ROBOT_MAX_TRAIL         = 60     # centroid history length
     ROBOT_PROCESS_NOISE     = 5e-2   # Kalman Q scalar
     ROBOT_MEASUREMENT_NOISE = 0.5   # Kalman R scalar
-    # ---- YOLO ----
-    ROBOT_YOLO_MODEL   = "yolov8x.pt"  # model. SWAP TO yolov8n if your laptop is a potato
-    ROBOT_YOLO_CONF    = 0.25          # detection confidence threshold
-    ROBOT_YOLO_CLASSES = None          # None = all classes; [0] = person only, etc.
-    ROBOT_YOLO_IMGSZ   = 640           # inference resolution (px)
 
 
-# ---------------------------------------------------------------------------
-# Lazy YOLO model loader — instantiated once, reused every frame
-# ---------------------------------------------------------------------------
-_yolo_model = None
-
-def _get_model():
-    global _yolo_model
-    if _yolo_model is None:
-        from ultralytics import YOLO
-        _yolo_model = YOLO(ROBOT_YOLO_MODEL)
-        _yolo_model.fuse()  # fuse Conv+BN layers for faster CPU inference
-    return _yolo_model
-
-
-# ---------------------------------------------------------------------------
-# Detection
-# ---------------------------------------------------------------------------
-
+# Replace detect_robots() entirely:
 def detect_robots(
         frame: np.ndarray,
-        alliance: str = "both",  # kept for API compatibility; YOLO is colour-agnostic
+        alliance: str = "both",
 ) -> List[Tuple[int, int, int, int, str]]:
     """
-    Detect FRC robots using YOLO object detection.
-
-    Returns a list of (cx, cy, w, h, alliance_colour) tuples.
-    alliance_colour is inferred from bumper colour after detection:
-    a small HSV check on the bounding-box region determines red/blue/unknown.
-
-    Parameters
-    ----------
-    frame    : BGR frame (full crop, no blackouts needed).
-    alliance : "red", "blue", or "both" — filters returned detections by
-               inferred bumper colour. Pass "both" to keep everything.
+    Detect FRC robots via tiled inference, then infer alliance from bumper colour.
+    Returns [(cx, cy, w, h, alliance_colour), ...]
     """
-    model  = _get_model()
-    results = model(
-        frame,
-        conf=ROBOT_YOLO_CONF,
-        classes=ROBOT_YOLO_CLASSES,
-        imgsz=ROBOT_YOLO_IMGSZ,
-        verbose=False,
-    )[0]
-
-    detections: List[Tuple[int, int, int, int, str]] = []
     h_frame, w_frame = frame.shape[:2]
+    detections = []
 
-    for box in results.boxes:
-        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+    for x1, y1, x2, y2, conf, cls in _tiled_detect(frame):
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w_frame, x2), min(h_frame, y2)
         if x2 <= x1 or y2 <= y1:
@@ -108,18 +69,6 @@ def detect_robots(
 
         w = x2 - x1
         h = y2 - y1
-
-        # ---- shape filter: reject people and other tall thin objects ----
-        # FRC robots from a broadcast overhead angle are roughly square or
-        # wider-than-tall. People are tall and narrow (aspect > 1.8).
-        aspect = h / max(w, 1)
-        if aspect > 1.6:          # too tall/thin → likely a person
-            continue
-        if w < 20 or h < 15:      # too small → noise
-            continue
-        if w > w_frame * 0.4:     # too wide → probably a merged background blob
-            continue
-
         cx = x1 + w // 2
         cy = y1 + h // 2
 

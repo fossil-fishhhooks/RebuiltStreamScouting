@@ -186,7 +186,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         frame   = crop_frame(frame, crop_region)
         circles = detect_circles(frame, hole_region, active_region)
         objects = tracker.update([(x, y) for (x, y, r) in circles])
-        robot_dets = detect_robots(frame, alliance="both")
+        robot_dets = detect_robots(full_frame, alliance="both")
         live, dormant = robot_tracker.update(robot_dets)
         frame = robot_tracker.draw(frame)
 
