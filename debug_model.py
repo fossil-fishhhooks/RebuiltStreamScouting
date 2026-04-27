@@ -16,7 +16,7 @@ ASPECT_AREA_THRESH = MAX_BOX_AREA * 0.25   # area at which enforcement begins
 ASPECT_MAX_LOOSE   = 2.5 # max ratio allowed at the threshold
 ASPECT_MAX_TIGHT   = 1.35   #max skew allowed at max area
 
-SAVE_OUT      = True
+SAVE_OUT      = False
 
 model = YOLO(MODEL_PATH)
 
