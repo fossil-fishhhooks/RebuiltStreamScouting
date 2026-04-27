@@ -7,10 +7,14 @@ MODEL_PATH    = "YOLOv8n-6k-variated.pt"
 VIDEO_PATH    = "Q18.mp4"
 OUTPUT_PATH   = "test.avi"
 TILE_SIZE     = 640                    # training res
-OVERLAP       = 0.45                   # fraction of tile_size that adjacent tiles share
-CONF_THRESH   = 0.6                    # minimum confidence for a detection
+OVERLAP       = 0.47                   # fraction of tile_size that adjacent tiles share
+CONF_THRESH   = 0.4                    # minimum confidence for a detection
 MAX_BOX_AREA  = 480 * 480 * 0.06       # max allowed box area in pixels
-DISPLAY_SCALE = 0.5                    # resize factor for the preview window only
+DISPLAY_SCALE = 1.0                    # resize factor for the preview window only
+
+ASPECT_AREA_THRESH = MAX_BOX_AREA * 0.25   # area at which enforcement begins
+ASPECT_MAX_LOOSE   = 2.5 # max ratio allowed at the threshold
+ASPECT_MAX_TIGHT   = 1.35   #max skew allowed at max area
 
 SAVE_OUT      = False
 
@@ -68,7 +72,16 @@ def infer(frame):
             result.boxes.cls.cpu().numpy()  # class index
         ):
             gx1,gy1,gx2,gy2 = box[0]+x0, box[1]+y0, box[2]+x0, box[3]+y0 # coord to full fraame
-            if (gx2-gx1) * (gy2-gy1) > MAX_BOX_AREA: continue  # reject oversized boxes
+            bw, bh = gx2 - gx1, gy2 - gy1
+            area = bw * bh
+            if area > MAX_BOX_AREA:
+                continue
+            if area > ASPECT_AREA_THRESH:
+                aspect = max(bw, bh) / (min(bw, bh) + 1e-6)  # long/short ratio
+                t = (area - ASPECT_AREA_THRESH) / (MAX_BOX_AREA - ASPECT_AREA_THRESH)  # 0->1
+                allowed = ASPECT_MAX_LOOSE + t * (ASPECT_MAX_TIGHT - ASPECT_MAX_LOOSE)  # linear
+                if aspect > allowed:
+                    continue
             raw.append([gx1, gy1, gx2, gy2, conf, int(cls)]) # accumulate all surviving detections across all tiles
 
     return raw, nms(raw, 0.62), nms(raw, 0.38), tiles_coords # raw = all detections; nms50 = loose merge; nms35 = tight merge; coords for tile debug drawing
