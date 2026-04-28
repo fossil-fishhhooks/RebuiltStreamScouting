@@ -116,13 +116,25 @@ _yolo_latency_ms: float = 0.0  # smoothed EMA
 _yolo_latency_lock = threading.Lock()
 _YOLO_EMA_ALPHA = 0.2  # lower = smoother
 
+# Staleness tracking.
+# _dispatch_seq: incremented by detect() each call — how many frames the main
+#   thread has handed off total.
+# _result_seq: incremented by the worker each time it finishes an inference.
+# Both are read/written under _result_lock so comparisons are always consistent.
+# _result_ready: event pulsed by the worker whenever _result_seq advances,
+#   used by detect() to sleep instead of spin when waiting for a fresh result.
+_dispatch_seq: int = 0
+_result_seq:   int = 0
+_result_ready  = threading.Event()
+
 
 def get_yolo_latency_ms() -> float:
     with _yolo_latency_lock:
         return _yolo_latency_ms
 
+
 def _worker_loop() -> None:
-    global _pending_frame, _latest_result, _yolo_latency_ms
+    global _pending_frame, _latest_result, _yolo_latency_ms, _result_seq
     while not _stop_event.is_set():
         # Atomically grab-and-clear the pending frame.
         with _pending_lock:
@@ -149,6 +161,8 @@ def _worker_loop() -> None:
 
         with _result_lock:
             _latest_result = result
+            _result_seq   += 1   # worker owns this — no cross-thread counter read
+        _result_ready.set()      # wake any detect() calls that are waiting
 
         # Mark the frame as consumed so we don't re-run on the same frame.
         with _pending_lock:
@@ -171,16 +185,32 @@ def stop_worker() -> None:
         _worker_thread.join(timeout=5)
 
 
-
-
-def detect(frame: np.ndarray) -> list:
-   #yayayayyayay non blocking
-    global _pending_frame
+def detect(frame: np.ndarray, max_stale_frames: int = 0) -> list:
+   #yayayayyayay non blocking (unless result is too stale — then we wait for a fresh one)
+    global _pending_frame, _dispatch_seq
     _ensure_worker()
+
+    # Snapshot result_seq before queuing so we know what "a new result" means.
+    with _result_lock:
+        seq_before = _result_seq
+
+    _dispatch_seq += 1
 
     # Hand the latest frame to the worker, overwriting any unprocessed one.
     with _pending_lock:
         _pending_frame = frame
+
+    if max_stale_frames > 0:
+        # staleness = dispatched frames since the last completed inference.
+        staleness = _dispatch_seq - seq_before   # seq_before == _result_seq at this moment
+        if staleness > max_stale_frames:
+            # Block until the worker finishes at least one new inference.
+            while True:
+                _result_ready.wait(timeout=0.005)
+                _result_ready.clear()
+                with _result_lock:
+                    if _result_seq > seq_before:
+                        return list(_latest_result)
 
     with _result_lock:
         return list(_latest_result)

@@ -132,7 +132,7 @@ def adjust_polygon_for_apriltag(video_path, side, frame_240_offset=None):
         print(f"[AprilTag] Error adjusting polygon: {e}")
         return None
 
-def run(video_path, side, frame_skip=FRAME_SKIP):
+def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=0):
     cap = cv2.VideoCapture(video_path)
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -194,14 +194,17 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         objects = tracker.update([(x, y) for (x, y, r) in circles])
         t_track = time.perf_counter()
 
-        robot_dets_full = detect_robots(raw_frame, alliance="both")
+        t_before_robots = time.perf_counter()
+        robot_dets_full = detect_robots(raw_frame, alliance="both", max_stale_frames=max_stale_frames)
         robot_dets = [
-            (cx - crop_x, cy - crop_y, w, h, alliance)
-            for (cx, cy, w, h, alliance) in robot_dets_full
+            (cx - crop_x, cy - crop_y, w, h, alliance,
+             x1 - crop_x, y1 - crop_y, x2 - crop_x, y2 - crop_y)
+            for (cx, cy, w, h, alliance, x1, y1, x2, y2) in robot_dets_full
         ]
         t_robots = time.perf_counter()
+        yolo_waited = max_stale_frames > 0 and (t_robots - t_before_robots) > 0.002
 
-        live, dormant = robot_tracker.update(robot_dets, raw_frame=raw_frame)
+        live, dormant = robot_tracker.update(robot_dets, crop_frame=frame)
         frame = robot_tracker.draw(frame)
         t_rtrack = time.perf_counter()
 
@@ -363,7 +366,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             f"[time] crop={t_crop-t_start:.3f} "
             f"circles={t_circles-t_crop:.3f} "
             f"track={t_track-t_circles:.3f} "
-            f"robots={t_robots-t_track:.3f} "
+            f"robots={t_robots-t_before_robots:.3f}{'*' if yolo_waited else ''} "
             f"rtrack={t_rtrack-t_robots:.3f} "
             f"score={t_score-t_rtrack:.3f} "
             f"draw={t_draw-t_score:.3f} "
@@ -385,22 +388,20 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.putText(vis, f"#{shot_idx}", (mid[0] + 4, mid[1] - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-        yolo_ms = get_yolo_latency_ms()
-        try:
-            from robot_tracker import _USE_GPU as _robot_gpu
-        except ImportError:
-            _robot_gpu = False
-
         cv2.putText(vis, f"Score: {score}", (460, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(vis, f"{display_fps:.1f}/{(60 / max(1, frame_skip)):.0f} fps  tracks: {len(tracker.tracks)}",
                     (460, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
-        # YOLO latency line
+        yolo_ms    = get_yolo_latency_ms()
         yolo_color = (0, 255, 180) if yolo_ms < 80 else (0, 140, 255)
-        cv2.putText(vis, f"YOLO {yolo_ms:.0f} ms  Motion: {'GPU' if _robot_gpu else 'CPU'}",
-                    (460, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, yolo_color, 1)
+        try:
+            from robot_tracker import _USE_GPU as _rg
+        except ImportError:
+            _rg = False
+        wait_tag = "  WAIT" if yolo_waited else ""
+        cv2.putText(vis, f"YOLO {yolo_ms:.0f} ms  Motion: {'GPU' if _rg else 'CPU'}{wait_tag}",
+                    (460, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.46, yolo_color, 1)
 
         cv2.imshow("tracking", vis)
         if cv2.waitKey(1) & 0xFF == 27:
@@ -417,6 +418,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Track")
     parser.add_argument("--side", type=str, choices=["red", "blue"], default="red")
     parser.add_argument("--frame-drop", type=int)
+    parser.add_argument("--max-stale-frames", type=int, default=0,
+                        help="Max frames a YOLO result can be stale before it's suppressed (0 = unlimited)")
     parser.add_argument("--video-file", type=str)
     args = parser.parse_args()
 
@@ -425,5 +428,5 @@ if __name__ == "__main__":
     frame_skip = args.frame_drop if args.frame_drop is not None else FRAME_SKIP
 
     print("Initializing...")
-    sc = run(args.video_file, args.side, frame_skip=frame_skip)
+    sc = run(args.video_file, args.side, frame_skip=frame_skip, max_stale_frames=args.max_stale_frames)
     print(f"Final score: {sc}")
