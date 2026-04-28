@@ -313,7 +313,7 @@ class PathStitcher:
         # 1. Reap tracks that just started ghosting → log them
         for oid, track in list(tracker.tracks.items()):
             if track.ghost_count == 1 and oid not in self._death_log:
-                pts = list(trails.get(oid, []))
+                pts = list(full_trails.get(oid, []))   # full path, not decayed visual trail
                 vel = _trail_velocity(pts)
                 fit = self._get_fit(oid, pts)
                 self._death_log[oid] = {
@@ -339,7 +339,7 @@ class PathStitcher:
         ]
 
         for new_oid in new_oids:
-            new_pts = list(trails.get(new_oid, []))
+            new_pts = list(full_trails.get(new_oid, []))   # full path, not decayed visual trail
             if not new_pts:
                 continue
             new_vel = _trail_velocity(new_pts)
@@ -489,8 +489,8 @@ class PathStitcher:
         Splice new_oid's trail onto old_oid's trail.
         Re-IDs new_oid → old_oid in all dicts and in tracker.tracks.
         """
-        old_pts   = list(trails.get(old_oid, []))
-        new_pts   = list(trails.get(new_oid, []))
+        old_pts   = list(full_trails.get(old_oid, []))   # full path for correct fit-cache keying
+        new_pts   = list(full_trails.get(new_oid, []))
         old_alps  = list(t_alphas.get(old_oid, []))
         new_alps  = list(t_alphas.get(new_oid, []))
 
