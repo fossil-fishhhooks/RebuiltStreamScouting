@@ -30,6 +30,7 @@ from vision import (
 solve_y
 )
 from robot_tracker import RobotTracker, detect_robots
+from robot_detector import get_yolo_latency_ms
 
 
 def get_frame_at_index(cap, frame_idx):
@@ -200,7 +201,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
         ]
         t_robots = time.perf_counter()
 
-        live, dormant = robot_tracker.update(robot_dets)
+        live, dormant = robot_tracker.update(robot_dets, raw_frame=raw_frame)
         frame = robot_tracker.draw(frame)
         t_rtrack = time.perf_counter()
 
@@ -384,11 +385,22 @@ def run(video_path, side, frame_skip=FRAME_SKIP):
             cv2.putText(vis, f"#{shot_idx}", (mid[0] + 4, mid[1] - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
+        yolo_ms = get_yolo_latency_ms()
+        try:
+            from robot_tracker import _USE_GPU as _robot_gpu
+        except ImportError:
+            _robot_gpu = False
+
         cv2.putText(vis, f"Score: {score}", (460, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(vis, f"{display_fps:.1f}/{(60 / max(1, frame_skip)):.0f} fps  tracks: {len(tracker.tracks)}",
                     (460, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
+        # YOLO latency line
+        yolo_color = (0, 255, 180) if yolo_ms < 80 else (0, 140, 255)
+        cv2.putText(vis, f"YOLO {yolo_ms:.0f} ms  Motion: {'GPU' if _robot_gpu else 'CPU'}",
+                    (460, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, yolo_color, 1)
 
         cv2.imshow("tracking", vis)
         if cv2.waitKey(1) & 0xFF == 27:

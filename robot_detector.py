@@ -3,6 +3,7 @@ import threading
 import cv2
 import numpy as np
 from ultralytics import YOLO
+import time
 
 
 MODEL_PATH         = "YOLOv8n-6k-variated.pt"
@@ -111,9 +112,17 @@ _result_lock   = threading.Lock()
 _worker_thread: threading.Thread | None = None
 _stop_event    = threading.Event()
 
+_yolo_latency_ms: float = 0.0  # smoothed EMA
+_yolo_latency_lock = threading.Lock()
+_YOLO_EMA_ALPHA = 0.2  # lower = smoother
+
+
+def get_yolo_latency_ms() -> float:
+    with _yolo_latency_lock:
+        return _yolo_latency_ms
 
 def _worker_loop() -> None:
-    global _pending_frame, _latest_result
+    global _pending_frame, _latest_result, _yolo_latency_ms
     while not _stop_event.is_set():
         # Atomically grab-and-clear the pending frame.
         with _pending_lock:
@@ -124,7 +133,19 @@ def _worker_loop() -> None:
             threading.Event().wait(timeout=0.001)
             continue
 
+        t0 = time.perf_counter()
         result = _run_inference(frame)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        # EMA update
+        with _yolo_latency_lock:
+            if _yolo_latency_ms == 0.0:
+                _yolo_latency_ms = elapsed_ms
+            else:
+                _yolo_latency_ms = (
+                        _YOLO_EMA_ALPHA * elapsed_ms
+                        + (1.0 - _YOLO_EMA_ALPHA) * _yolo_latency_ms
+                )
 
         with _result_lock:
             _latest_result = result
