@@ -32,6 +32,9 @@ solve_y
 from robot_tracker import RobotTracker, detect_robots
 from robot_detector import get_yolo_latency_ms
 
+from path_stitcher import PathStitcher
+
+
 
 def get_frame_at_index(cap, frame_idx):
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -163,6 +166,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=0):
     scored_track_ids        = set()
     scored_curves           = {}   # oid -> (trail_pts, curve_pts), drawn permanently
 
+    stitcher        = PathStitcher()
     fps_window      = 30
     frame_times     = []
     display_fps     = 0.0
@@ -237,72 +241,50 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=0):
                 t_alphas.pop(oid, None)
                 fit_cache.pop(oid, None)
 
+        # ── live trail stitching (parabolic + velocity coherence) ──────────
+        stitcher.update(trails, t_alphas, full_trails, tracker, frame_idx)
+
+        # ── trail decay ────────────────────────────────────────────────────
+        for oid in list(t_alphas.keys()):
+            t_alphas[oid] = [a * TRAIL_DECAY for a in t_alphas[oid]]
+            combined = [(p, a) for p, a in zip(trails[oid], t_alphas[oid]) if a > 0.05]
+            if combined:
+                pts, alps = zip(*combined)
+                trails[oid] = list(pts)
+                t_alphas[oid] = list(alps)
+            else:
+                trails.pop(oid, None)
+                t_alphas.pop(oid, None)
+                # also evict fit cache inside stitcher
+                stitcher._fit_cache.pop(oid, None)
+
+        # ── score check (now sees stitched trails) ─────────────────────────
         for oid, pts in trails.items():
-            track      = tracker.tracks.get(oid)
+            # Resolve canonical ID in case this oid was a continuation
+            canon_oid = stitcher.remap.get(oid, oid)
+            track = tracker.tracks.get(oid)
             track_lost = bool(track and track.ghost_count == 1)
             if check_parabola_score(
-                    oid, pts, frame_idx, last_score_frame_per_id,
+                    canon_oid, pts, frame_idx, last_score_frame_per_id,
                     last_score_frame, score_polygon, scored_track_ids,
                     track_lost=track_lost,
             ):
                 score += 1
-                last_score_frame_per_id[oid] = frame_idx
-                last_score_frame             = frame_idx
-                scored_track_ids.add(oid)
-                if oid not in origins and oid in first_seen:
-                    origins[oid] = first_seen[oid]
+                last_score_frame_per_id[canon_oid] = frame_idx
+                last_score_frame = frame_idx
+                scored_track_ids.add(canon_oid)
+                if canon_oid not in origins and canon_oid in first_seen:
+                    origins[canon_oid] = first_seen[canon_oid]
 
-                if oid not in scored_curves:
-                    trail_snap = list(full_trails[oid])
-                    scored_curves[oid] = (trail_snap, [])
+                if canon_oid not in scored_curves:
+                    trail_snap = list(full_trails.get(oid, []))
+                    scored_curves[canon_oid] = (trail_snap, [])
 
-                print(f"  [SCORE]  ID {oid} @ frame {frame_idx} -> total: {score}")
+                print(f"  [SCORE]  ID {canon_oid} @ frame {frame_idx} -> total: {score}")
 
-        # --- post-score trail stitching ---
-        # Try to merge any two scored trails where one's endpoint is close
-        # to another's start point, indicating a dropped re-id mid-flight.
-        STITCH_DIST = 20   # px — max gap to bridge
-        merged = True
-        while merged:
-            merged = False
-            keys = list(scored_curves.keys())
-            for i, ka in enumerate(keys):
-                if ka not in scored_curves:
-                    continue
-                trail_a, cpts_a = scored_curves[ka]
-                if not trail_a:
-                    continue
-                end_a = trail_a[-1]
-                for kb in keys[i+1:]:
-                    if kb not in scored_curves:
-                        continue
-                    trail_b, cpts_b = scored_curves[kb]
-                    if not trail_b:
-                        continue
-                    start_b = trail_b[0]
-                    end_b   = trail_b[-1]
-                    start_a = trail_a[0]
+        # ── post-hoc scored-curve stitching (upgraded, replaces old loop) ──
+        scored_curves = stitcher.stitch_scored_curves(scored_curves)
 
-                    # Check a→b (end of a connects to start of b)
-                    d_ab = ((end_a[0]-start_b[0])**2 + (end_a[1]-start_b[1])**2)**0.5
-                    # Check b→a (end of b connects to start of a)
-                    d_ba = ((end_b[0]-start_a[0])**2 + (end_b[1]-start_a[1])**2)**0.5
-
-                    if d_ab <= STITCH_DIST or d_ba <= STITCH_DIST:
-                        if d_ab <= d_ba:
-                            merged_trail = trail_a + trail_b
-                        else:
-                            merged_trail = trail_b + trail_a
-                        # keep the lower id, drop the higher
-                        keep, drop = (ka, kb) if ka < kb else (kb, ka)
-                        scored_curves[keep] = (merged_trail, [])
-                        del scored_curves[drop]
-                        # re-number is handled by enumerate at draw time
-                        merged = True
-                        print(f"  [STITCH] merged scored trails {ka} + {kb}")
-                        break
-                if merged:
-                    break
         t_score = time.perf_counter()
 
         vis = frame.copy()
