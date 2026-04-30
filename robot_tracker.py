@@ -190,7 +190,7 @@ class RobotTrack:
 
     def predict(self) -> Tuple[int, int]:
         pred = self.kf.predict()
-        return int(pred[0]), int(pred[1])
+        return int(pred[0][0]), int(pred[1][0])
 
     def update(self, cx: int, cy: int, w: int, h: int,
                alliance: str = "unknown",
@@ -216,7 +216,7 @@ class RobotTrack:
 
     def position(self) -> Tuple[int, int]:
         s = self.kf.statePost
-        return int(s[0]), int(s[1])
+        return int(s[0][0]), int(s[1][0])
 
     @property
     def state(self) -> str:
