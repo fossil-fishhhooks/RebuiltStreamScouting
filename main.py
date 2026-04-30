@@ -126,19 +126,20 @@ class RobotIDUI:
             # Ignore events inside the button bar or banner
             h_total = _canvas_h(display_frame)
             btn_top = h_total - self._BTN_H
+            frame_oy = self._BANNER_H
             if y >= btn_top or y <= self._BANNER_H:
                 if event == cv2.EVENT_LBUTTONDOWN:
                     self._handle_btn_click(x, y, display_frame, s)
                 s["dragging"] = False
                 return
             if event == cv2.EVENT_LBUTTONDOWN:
-                s["box_start"] = (x, y)
-                s["box_end"]   = (x, y)
+                s["box_start"] = (x, y - frame_oy)
+                s["box_end"]   = (x, y - frame_oy)
                 s["dragging"]  = True
             elif event == cv2.EVENT_MOUSEMOVE and s["dragging"]:
-                s["box_end"] = (x, y)
+                s["box_end"] = (x, y - frame_oy)
             elif event == cv2.EVENT_LBUTTONUP and s["dragging"]:
-                s["box_end"]  = (x, y)
+                s["box_end"]  = (x, y - frame_oy)
                 s["dragging"] = False
             elif event == cv2.EVENT_RBUTTONDOWN:
                 # Right-click clears the current box
@@ -150,6 +151,7 @@ class RobotIDUI:
         current_idx = 0
         while current_idx < len(slot_ids):
             slot_id = slot_ids[current_idx]
+            label = f"{'RED' if slot_id < 3 else 'BLUE'}{slot_id % 3 + 1}"
             color   = _SLOT_COLORS[slot_id % len(_SLOT_COLORS)]
 
             # Reset shared state for this slot; keep _cb_state[0] pointing at it
@@ -168,6 +170,7 @@ class RobotIDUI:
                 "_slot_ids":    slot_ids,
                 "_result":      result,
                 "_absent":      absent,
+                "_label":       label,
             }
             self._cb_state[0] = state   # enable callback for this slot
 
@@ -286,6 +289,8 @@ class RobotIDUI:
         # Offset everything: frame content starts at y=extra_top
         frame_oy = extra_top
 
+        label = state["_label"]
+
         # ── Draw existing robot positions (already initialized) ───────────
         for sid, track in self._rt.tracks.items():
             if not track.initialized:
@@ -310,13 +315,13 @@ class RobotIDUI:
             px = pcx + ox
             py = pcy + oy + frame_oy
             cv2.circle(canvas, (px, py), 8, c, -1, cv2.LINE_AA)
-            cv2.putText(canvas, f"✓{prev_sid}", (px + 10, py - 6),
+            cv2.putText(canvas, f"✓{label}", (px + 10, py - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1, cv2.LINE_AA)
 
         # ── Draw "absent" labels ──────────────────────────────────────────
         for ai, asid in enumerate(absent):
             c = _SLOT_COLORS[asid % len(_SLOT_COLORS)]
-            cv2.putText(canvas, f"Slot {asid}: NOT IN FRAME",
+            cv2.putText(canvas, f"{label}: NOT IN FRAME",
                         (10, frame_oy + 20 + ai * 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, c, 1, cv2.LINE_AA)
 
@@ -345,7 +350,7 @@ class RobotIDUI:
         title = prompt or "ROBOT RE-IDENTIFICATION"
         cv2.putText(canvas, title, (8, 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 220, 255), 1, cv2.LINE_AA)
-        slot_info = (f"Slot {slot_id}  ({current_idx + 1}/{len(slot_ids)})  "
+        slot_info = (f"{label}  ({current_idx + 1}/{len(slot_ids)})  "
                      f": draw a box, then click Confirm.  "
                      f"{'[BOX READY]' if state['box_start'] and state['box_end'] else '[NO BOX]'}")
         cv2.putText(canvas, slot_info, (8, 38),
@@ -1058,7 +1063,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Track")
     parser.add_argument("--side", type=str, choices=["red", "blue"], default="red")
     parser.add_argument("--frame-drop", type=int)
-    parser.add_argument("--max-stale-frames", type=int, default=0,
+    parser.add_argument("--max-stale-frames", type=int, default=5,
                         help="Max frames a YOLO result can be stale before it's suppressed (0 = unlimited)")
     parser.add_argument("--video-file", type=str)
     args = parser.parse_args()
