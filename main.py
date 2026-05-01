@@ -18,8 +18,10 @@ from config import (
     SCORE_POLYGON_REF_BY_SIDE,
     ATTRIBUTION_MAX_DIST,
     ATTRIBUTION_TIME_TOL,
+    ATTRIBUTION_SEARCH_FRAMES,
     MATCH_PERIODS,
     ROBOT_TRACK_LOSS_OK,
+    DEBUG_FRAME_OUTLINES,
 )
 from tracker import Tracker
 from vision import (
@@ -474,41 +476,106 @@ def period_names():
 
 def attribute_shot(ball_start_frame: int,
                    ball_start_pos: tuple,
-                   robot_tracks: dict, alliance=None) -> int | None:
+                   robot_tracks: dict,
+                   ball_trail: list | None = None,
+                   alliance: str | None = None) -> int | None:
     """Return the robot slot ID most likely to have fired this ball, or None.
 
-    Searches each robot's perma_path for the point whose frame_idx is closest
-    to ball_start_frame (within ATTRIBUTION_TIME_TOL), then checks spatial
-    distance.  The robot with the best combined score wins.
+    Strategy (in order of preference):
+    1. Tight window: find the closest robot within ATTRIBUTION_TIME_TOL frames
+       of ball_start_frame that is also within ATTRIBUTION_MAX_DIST px.
+    2. Extrapolation: if no robot qualifies in the tight window, walk forward
+       along the ball's trail (if provided) and for each ball position check
+       whether any robot was within ATTRIBUTION_MAX_DIST at the corresponding
+       frame.  The robot that appears closest across the most trail points wins.
+    3. Wide window: if still unresolved, search each robot's perma_path up to
+       ATTRIBUTION_SEARCH_FRAMES frames away and accept the nearest one.
 
     perma_path entries are (x, y, frame_idx).
+    ball_trail, if given, is a list of (x, y) points starting at ball_start_frame.
     """
     bx, by = ball_start_pos
-    best_slot  = None
-    best_dist  = float("inf")
 
-    for slot_id, track in robot_tracks.items():
-        if not track.initialized or not track.perma_path:
-            continue
-        if alliance and track.alliance != alliance and track.alliance != "unknown":
-            continue
-
-        # Binary-search-style: find the perma_path entry closest in time
-        # (perma_path is appended in order so frame_idx is monotonically non-decreasing)
+    def _closest_robot_pos(track, target_frame: int):
+        """Return (px, py, dt) for the perma_path point nearest to target_frame."""
+        if not track.perma_path:
+            return None
         frames = [pt[2] for pt in track.perma_path]
-        idx = bisect.bisect_left(frames, ball_start_frame)
-        # check the two neighbors around the insertion point
+        idx = bisect.bisect_left(frames, target_frame)
         candidates = [i for i in (idx - 1, idx) if 0 <= i < len(track.perma_path)]
         if not candidates:
+            return None
+        best = min((track.perma_path[i] for i in candidates),
+                   key=lambda pt: abs(pt[2] - target_frame))
+        return best[0], best[1], abs(best[2] - target_frame)
+
+    eligible = {
+        slot_id: track
+        for slot_id, track in robot_tracks.items()
+        if track.initialized and track.perma_path
+        and (not alliance or track.alliance in (alliance, "unknown"))
+    }
+    if not eligible:
+        return None
+
+    # ── Stage 1: tight temporal window ────────────────────────────────────
+    best_slot = None
+    best_dist = float("inf")
+    for slot_id, track in eligible.items():
+        res = _closest_robot_pos(track, ball_start_frame)
+        if res is None:
             continue
-        closest_pt = min((track.perma_path[i] for i in candidates),
-                         key=lambda pt: abs(pt[2] - ball_start_frame))
-        closest_dt = abs(closest_pt[2] - ball_start_frame)
+        px, py, dt = res
+        if dt > ATTRIBUTION_TIME_TOL:
+            continue
+        dist = ((bx - px) ** 2 + (by - py) ** 2) ** 0.5
+        if dist < ATTRIBUTION_MAX_DIST and dist < best_dist:
+            best_dist = dist
+            best_slot = slot_id
 
-        if closest_pt is None or closest_dt > ATTRIBUTION_TIME_TOL:
-            continue   # no temporally valid sample for this robot
+    if best_slot is not None:
+        return best_slot
 
-        px, py, _ = closest_pt
+    # ── Stage 2: trail extrapolation ──────────────────────────────────────
+    # Walk along the ball's trail.  For each (frame, ball_pos) pair check which
+    # robot was closest at that frame.  Accumulate a score per slot (sum of
+    # inverse distances) and return the winner if it is unambiguous.
+    if ball_trail and len(ball_trail) >= 2:
+        slot_scores: dict[int, float] = {sid: 0.0 for sid in eligible}
+        slot_hits:   dict[int, int]   = {sid: 0   for sid in eligible}
+
+        for step, (tbx, tby) in enumerate(ball_trail):
+            trail_frame = ball_start_frame + step
+            for slot_id, track in eligible.items():
+                res = _closest_robot_pos(track, trail_frame)
+                if res is None:
+                    continue
+                px, py, dt = res
+                if dt > ATTRIBUTION_SEARCH_FRAMES:
+                    continue
+                dist = ((tbx - px) ** 2 + (tby - py) ** 2) ** 0.5
+                if dist < ATTRIBUTION_MAX_DIST:
+                    slot_scores[slot_id] += 1.0 / (dist + 1.0)
+                    slot_hits[slot_id]   += 1
+
+        # Accept if one slot has ≥2 hits and clearly dominates (2× next best)
+        ranked = sorted(slot_scores.items(), key=lambda kv: kv[1], reverse=True)
+        if ranked and ranked[0][1] > 0:
+            top_slot, top_score = ranked[0]
+            runner_score = ranked[1][1] if len(ranked) > 1 else 0.0
+            if slot_hits[top_slot] >= 2 and top_score >= 2.0 * max(runner_score, 1e-9):
+                return top_slot
+
+    # ── Stage 3: wide temporal window ─────────────────────────────────────
+    best_slot = None
+    best_dist = float("inf")
+    for slot_id, track in eligible.items():
+        res = _closest_robot_pos(track, ball_start_frame)
+        if res is None:
+            continue
+        px, py, dt = res
+        if dt > ATTRIBUTION_SEARCH_FRAMES:
+            continue
         dist = ((bx - px) ** 2 + (by - py) ** 2) ** 0.5
         if dist < ATTRIBUTION_MAX_DIST and dist < best_dist:
             best_dist = dist
@@ -726,41 +793,63 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
                 _loss_frame_counts[k] = 0
 
         # 2) Update per-slot loss counters.
-        #    A slot counts as "lost" if it is initialized but ghost_count > 0,
-        #    OR if it has never been initialized at all (never seen by YOLO and
-        #    not seeded at startup).
+        #    A slot counts as "lost" if:
+        #      • it has never been initialized (not seeded and not seen by YOLO), OR
+        #      • it is initialized but has ghost_count > 0 (YOLO has lost it), OR
+        #      • it was marked "not in frame" by the operator (initialized=False,
+        #        ghost_count=0 but still not contributing to active tracking).
+        #    A slot is considered *active* only when initialized AND ghost_count==0.
         for tid, track in robot_tracker.tracks.items():
-            if not track.initialized or track.ghost_count > 0:
-                _loss_frame_counts[tid] += 1
-            else:
-                # Slot is alive — reset its counter and clear any prior prompt flag
+            is_active = track.initialized and track.ghost_count == 0
+            if is_active:
+                # Robot is live — reset its loss counter and allow future re-prompts
                 if _loss_frame_counts[tid] > 0:
                     _loss_frame_counts[tid] = 0
                 _lost_prompted.discard(tid)
+            else:
+                # Robot is absent, ghosted, or never initialized — count as lost
+                _loss_frame_counts[tid] += 1
 
         # 3) TRACK-LOSS — trigger when ≥1 slot has been continuously lost for
         #    ROBOT_TRACK_LOSS_OK frames and hasn't already been prompted this
         #    loss episode.
+        #
+        #    Key rule: a slot that the operator marked "N" (not in frame) is
+        #    never added to _lost_prompted so it will re-trigger after another
+        #    ROBOT_TRACK_LOSS_OK frames.  This ensures the system keeps asking
+        #    until all 6 robots are genuinely visible and being tracked.
         newly_lost = [
             tid for tid, cnt in _loss_frame_counts.items()
             if cnt >= ROBOT_TRACK_LOSS_OK and tid not in _lost_prompted
         ]
         if newly_lost:
-            print(f"  [RobotID] Track loss threshold reached for slots {newly_lost} "
+            labels_str = ", ".join(
+                f"{'Red' if tid < 3 else 'Blue'} {(tid % 3) + 1}"
+                for tid in newly_lost
+            )
+            print(f"  [RobotID] Track loss threshold reached for {labels_str} "
                   f"(counts: {[_loss_frame_counts[t] for t in newly_lost]})")
             assignments = robot_id_ui.run(
                 raw_frame, (crop_x, crop_y), newly_lost,
                 prompt=(
-                    f"TRACKING LOST slot(s) {newly_lost} missing for "
+                    f"TRACKING LOST — {labels_str} missing for "
                     f">={ROBOT_TRACK_LOSS_OK} frames.  Draw a box (or 'Not in frame')."
                 ),
             )
-            if assignments is not None:   # None = user aborted
+            if assignments is not None:   # None = user aborted (ESC)
                 robot_id_ui.apply_assignments(assignments, frame_idx)
-            # Mark all prompted so we don't spam the dialog every frame
-            _lost_prompted.update(newly_lost)
-            for tid in newly_lost:
-                _loss_frame_counts[tid] = 0
+                # Only silence slots that were confirmed (box drawn).
+                # Absent slots ("N") are deliberately NOT added to _lost_prompted
+                # so they will re-trigger after another ROBOT_TRACK_LOSS_OK frames.
+                confirmed_slots = set(assignments.keys())
+                _lost_prompted.update(confirmed_slots)
+                # Reset loss counters only for confirmed slots
+                for tid in confirmed_slots:
+                    _loss_frame_counts[tid] = 0
+                # Absent slots: clear their counter so re-trigger starts fresh
+                absent_slots = set(newly_lost) - confirmed_slots
+                for tid in absent_slots:
+                    _loss_frame_counts[tid] = 0   # restart the count from zero
 
         for oid, (x, y) in objects.items():
             track = tracker.tracks.get(oid)
@@ -840,8 +929,12 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
                 else:
                     ball_start_pos   = pts[0]
                     ball_start_frame = frame_idx - len(pts) + 1
+                # Pass the full ball trail so attribute_shot can extrapolate
+                _ball_trail = full_trails.get(oid) or list(pts)
                 slot_id = attribute_shot(ball_start_frame, ball_start_pos,
-                                         robot_tracker.tracks,alliance=side)
+                                         robot_tracker.tracks,
+                                         ball_trail=_ball_trail,
+                                         alliance=side)
                 if slot_id is not None:
                     period = period_for_frame(ball_start_frame, fps, skip_frames)
                     robot_scores[slot_id]["total"]  += 1
@@ -859,6 +952,50 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
         t_score = time.perf_counter()
 
         vis = frame.copy()
+
+        # ── Debug frame outlines ───────────────────────────────────────────
+        # Each processing sub-region gets a colored border + title so it's
+        # easy to see exactly what area each pipeline stage operates on.
+        # Toggle DEBUG_FRAME_OUTLINES in config.py to show/hide.
+        if DEBUG_FRAME_OUTLINES:
+            _dbg_font  = cv2.FONT_HERSHEY_SIMPLEX
+            _dbg_thick = 2
+            _dbg_bg    = (0, 0, 0)   # shadow behind text
+
+            def _dbg_label(img, rect, border_color, title, thickness=2):
+                """Draw a colored border + title on img for the given (x1,y1,x2,y2) rect."""
+                x1, y1, x2, y2 = rect
+                cv2.rectangle(img, (x1, y1), (x2, y2), border_color, thickness, cv2.LINE_AA)
+                (tw, th), _ = cv2.getTextSize(title, _dbg_font, 0.52, 1)
+                # Label background pill
+                cv2.rectangle(img, (x1, y1), (x1 + tw + 6, y1 + th + 6), _dbg_bg, -1)
+                cv2.putText(img, title, (x1 + 3, y1 + th + 2),
+                            _dbg_font, 0.52, border_color, 1, cv2.LINE_AA)
+
+            # 1. Full cropped field view (= the whole vis frame)
+            _h_vis, _w_vis = vis.shape[:2]
+            _dbg_label(vis, (0, 0, _w_vis - 1, _h_vis - 1),
+                       (200, 200, 200), "CROP / FIELD VIEW")
+
+            # 2. Active region (where ball detection runs)
+            _dbg_label(vis, active_region, (0, 255, 120), "BALL DETECT (active region)")
+
+            # 3. Hole region (blacked out / ignored)
+            _dbg_label(vis, hole_region, (40, 40, 200), "HOLE (excluded)")
+
+            # 4. Score polygon bounding box
+            _sp_xs = [p[0] for p in score_polygon]
+            _sp_ys = [p[1] for p in score_polygon]
+            _dbg_label(vis,
+                       (min(_sp_xs), min(_sp_ys), max(_sp_xs), max(_sp_ys)),
+                       (0, 220, 255), "SCORE ZONE")
+
+            # 5. Robot detection frame (raw frame shown as inset outline in
+            #    crop-space: the raw frame covers the full crop area, so the
+            #    border is the same as the crop border — just label it differently)
+            _dbg_label(vis, (2, 2, _w_vis - 3, _h_vis - 3),
+                       (255, 120, 0), "ROBOT DETECT (YOLO)")
+
         cv2.polylines(vis, [np.array(score_polygon, dtype=np.int32)], True, (0, 255, 0), 2)
 
         for (x, y, r) in circles:

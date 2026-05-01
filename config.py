@@ -82,3 +82,17 @@ MATCH_PERIODS = [
     ("teleop", PERIOD_TELEOP_END_S),
     ("endgame", PERIOD_MATCH_END_S),
 ]
+
+# ── Debug frame outlines ───────────────────────────────────────────────────
+# When True, each logical sub-frame passed to a processing stage gets a
+# colored border + title label drawn on the visualisation so you can see
+# exactly what region each stage is operating on.
+# Toggle False to remove all overlays for a clean output.
+DEBUG_FRAME_OUTLINES = True
+
+# ── Attribution extrapolation ──────────────────────────────────────────────
+# When no robot is within ATTRIBUTION_TIME_TOL frames of the ball's first
+# appearance, how many additional frames forward/backward to search each
+# robot's perma_path before giving up.  The closest robot found in the
+# expanded window is accepted if it is still within ATTRIBUTION_MAX_DIST px.
+ATTRIBUTION_SEARCH_FRAMES = 30   # frames (~1 s at 30 fps)
