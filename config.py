@@ -49,7 +49,7 @@ FRAME_SKIP   = 2
 # How many consecutive frames a robot may be lost (ghost) before the system
 # pauses and asks the user to re-identify it.  Set to a large number to
 # disable the prompt (e.g. 9999).
-ROBOT_TRACK_LOSS_OK     = 30   # frames (~1.5 s at 30 fps)
+ROBOT_TRACK_LOSS_OK     = 20   # frames (~1.5 s at 30 fps)
 
 ROBOT_MAX_DIST          = 60
 ROBOT_GHOST_FRAMES      = 12

@@ -422,13 +422,6 @@ def stop_worker() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-# Hard cap: if YOLO result is stale for more than this many frames, detect()
-# will block until the worker delivers a fresh inference regardless of the
-# max_stale_frames argument.  Set via config if available.
-try:
-    from config import YOLO_HARD_STALE_FRAMES  # type: ignore
-except ImportError:
-    YOLO_HARD_STALE_FRAMES = 12   # ~0.4 s at 30 fps — tune in config.py
 
 
 def detect(frame: np.ndarray, max_stale_frames: int = 0) -> list:
@@ -464,10 +457,9 @@ def detect(frame: np.ndarray, max_stale_frames: int = 0) -> list:
         stale_now = _frames_since_result
 
     # Determine whether we must block.
-    soft_block = (max_stale_frames > 0) and (stale_now > max_stale_frames)
-    hard_block = stale_now > YOLO_HARD_STALE_FRAMES
+    block = (max_stale_frames > 0) and (stale_now > max_stale_frames)
 
-    if soft_block or hard_block:
+    if block:
         # Block until the worker has produced at least one result newer than
         # the snapshot we took above.
         _result_ready.clear()

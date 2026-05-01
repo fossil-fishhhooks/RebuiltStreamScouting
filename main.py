@@ -22,6 +22,7 @@ from config import (
     MATCH_PERIODS,
     ROBOT_TRACK_LOSS_OK,
     DEBUG_FRAME_OUTLINES,
+    CROP_REF
 )
 from tracker import Tracker
 from vision import (
@@ -69,7 +70,7 @@ class RobotIDUI:
     -----
     ui = RobotIDUI(robot_tracker)
     result = ui.run(raw_frame, crop_offset, slot_ids, prompt="")
-    # result: {slot_id: (crop_cx, crop_cy)} — absent slots are omitted
+    # result: {slot_id: (crop_cx, crop_cy)} -- absent slots are omitted
     # result is None if the user pressed ESC / aborted
     ui.apply_assignments(result, frame_idx)
     """
@@ -103,7 +104,7 @@ class RobotIDUI:
 
         Returns
         -------
-        dict  {slot_id: (crop_cx, crop_cy)}  — absent/skipped slots omitted.
+        dict  {slot_id: (crop_cx, crop_cy)}  -- absent/skipped slots omitted.
         None  if the user aborted with ESC before finishing.
         """
         if not slot_ids:
@@ -117,13 +118,13 @@ class RobotIDUI:
         cv2.namedWindow(self._WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self._WINDOW, 1280, 760) # aaaaaaa why is the default like 20 pixels
 
-        # Single persistent callback container — lives on self so it can never
+        # Single persistent callback container -- lives on self so it can never
         # be garbage-collected while OpenCV still holds a reference to _mouse.
         self._cb_state[0] = None   # reset for this run() call
 
         def _mouse(event, x, y, flags, *args):
             s = self._cb_state[0]
-            if s is None:          # callback disabled between slots — ignore
+            if s is None:          # callback disabled between slots -- ignore
                 return
             s["mouse_pos"] = (x, y)
             h_total  = _canvas_h(display_frame)
@@ -289,7 +290,7 @@ class RobotIDUI:
         current_label = state["_label"]
 
         # ── Draw existing robot positions (already initialized) ───────────
-        # Skip slots already confirmed/absent in this session — they get their
+        # Skip slots already confirmed/absent in this session -- they get their
         # own marker drawn in the confirmed-boxes loop below, avoiding duplicates.
         for sid, track in self._rt.tracks.items():
             if not track.initialized:
@@ -329,7 +330,7 @@ class RobotIDUI:
             cv2.putText(canvas, ok_lbl, (px + 14, py - 7),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, c, 1, cv2.LINE_AA)
 
-        # ── Draw "absent" labels — rendered in top-left corner of image ───
+        # ── Draw "absent" labels -- rendered in top-left corner of image ───
         for ai, asid in enumerate(absent):
             absent_alliance_cap = "Red" if asid < 3 else "Blue"
             absent_alliance_num = (asid % 3) + 1
@@ -466,7 +467,7 @@ def period_for_frame(frame_idx, fps, skip_frames):
     for name, end_s in MATCH_PERIODS:
         if elapsed_s < end_s:
             return name
-    return MATCH_PERIODS[-1][0]  # past end of last period — still last period
+    return MATCH_PERIODS[-1][0]  # past end of last period -- still last period
 
 
 def period_names():
@@ -701,7 +702,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
     robot_tracker = RobotTracker()
     trails     = defaultdict(list)
     t_alphas   = defaultdict(list)
-    full_trails = defaultdict(list)  # unbounded, no decay — used for scored snapshots
+    full_trails = defaultdict(list)  # unbounded, no decay -- used for scored snapshots
     first_seen = {}
     origins    = {}
     fit_cache  = {}  # oid -> (trail_len, params, err, x_min, x_max)
@@ -766,6 +767,17 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
              x1 - crop_x, y1 - crop_y, x2 - crop_x, y2 - crop_y)
             for (cx, cy, w, h, alliance, x1, y1, x2, y2) in robot_dets_full
         ]
+        robot_dets=[]
+        for (cx, cy, w, h, alliance, x1, y1, x2, y2) in robot_dets_full:
+            cx2 = cx-crop_x
+            cy2= cy-crop_y
+            nx1 = x1-crop_x
+            ny1 = y1-crop_y
+            nx2 = x2-crop_x
+            ny2 = y2-crop_y
+            if y2<CROP_REF[3]:
+                robot_dets.append((cx2,cy2,w,h,alliance,nx1,ny1,nx2,ny2))
+
         t_robots = time.perf_counter()
         yolo_waited = max_stale_frames > 0 and (t_robots - t_before_robots) > 0.002
 
@@ -774,16 +786,16 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
         t_rtrack = time.perf_counter()
 
         # ── Robot re-identification UI ─────────────────────────────────────
-        # 1) STARTUP — always shown on the very first processed frame so the
+        # 1) STARTUP -- always shown on the very first processed frame so the
         #    operator can draw boxes for all 6 slots before playback begins.
         if not _startup_done:
             all_ids = list(range(NUM_ROBOTS))
             print(f"  [RobotID] Startup: prompting for all {NUM_ROBOTS} slots")
             assignments = robot_id_ui.run(
-                raw_frame, (crop_x, crop_y), all_ids,
+                frame, (0, 0), all_ids,
                 prompt="STARTUP: draw a box around each robot to seed tracking.",
             )
-            # None means the user pressed ESC/abort — skip seeding but mark done
+            # None means the user pressed ESC/abort -- skip seeding but mark done
             if assignments:
                 robot_id_ui.apply_assignments(assignments, frame_idx)
             _startup_done = True
@@ -802,15 +814,15 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
         for tid, track in robot_tracker.tracks.items():
             is_active = track.initialized and track.ghost_count == 0
             if is_active:
-                # Robot is live — reset its loss counter and allow future re-prompts
+                # Robot is live -- reset its loss counter and allow future re-prompts
                 if _loss_frame_counts[tid] > 0:
                     _loss_frame_counts[tid] = 0
                 _lost_prompted.discard(tid)
             else:
-                # Robot is absent, ghosted, or never initialized — count as lost
+                # Robot is absent, ghosted, or never initialized -- count as lost
                 _loss_frame_counts[tid] += 1
 
-        # 3) TRACK-LOSS — trigger when ≥1 slot has been continuously lost for
+        # 3) TRACK-LOSS -- trigger when ≥1 slot has been continuously lost for
         #    ROBOT_TRACK_LOSS_OK frames and hasn't already been prompted this
         #    loss episode.
         #
@@ -830,9 +842,9 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
             print(f"  [RobotID] Track loss threshold reached for {labels_str} "
                   f"(counts: {[_loss_frame_counts[t] for t in newly_lost]})")
             assignments = robot_id_ui.run(
-                raw_frame, (crop_x, crop_y), newly_lost,
+                frame, (0, 0), newly_lost,
                 prompt=(
-                    f"TRACKING LOST — {labels_str} missing for "
+                    f"TRACKING LOST -- {labels_str} missing for "
                     f">={ROBOT_TRACK_LOSS_OK} frames.  Draw a box (or 'Not in frame')."
                 ),
             )
@@ -863,7 +875,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
                     trails[oid].pop(0)
                     t_alphas[oid].pop(0)
 
-        # Re-identification: tracker resurrected a dead ID — full_trail is
+        # Re-identification: tracker resurrected a dead ID -- full_trail is
         # already on the right key so nothing extra needed; but if a *new*
         # id was about to be created and we merged it back, the trail is
         # already continuous. No-op here; the tracker handles it in-place.
@@ -992,7 +1004,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
 
             # 5. Robot detection frame (raw frame shown as inset outline in
             #    crop-space: the raw frame covers the full crop area, so the
-            #    border is the same as the crop border — just label it differently)
+            #    border is the same as the crop border -- just label it differently)
             _dbg_label(vis, (2, 2, _w_vis - 3, _h_vis - 3),
                        (255, 120, 0), "ROBOT DETECT (YOLO)")
 
@@ -1165,7 +1177,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
             alliance_abbr = {"red": "RED", "blue": "BLU", "unknown": "UNK"}.get(
                 rtrack.alliance, "UNK")
             anum      = (slot_id % 3) + 1
-            row_label = f"{alliance_abbr}{anum}"   # "RED1", "BLU3" — compact for table
+            row_label = f"{alliance_abbr}{anum}"   # "RED1", "BLU3" -- compact for table
             slot_col  = _SLOT_COLORS[slot_id % len(_SLOT_COLORS)]
 
             cv2.putText(vis, row_label, (tx + 2, ry),
@@ -1212,7 +1224,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
         alliance_cap = track.alliance.capitalize()
         alliance_num = (slot_id % 3) + 1
         label = f"{alliance_cap} {alliance_num} (s{slot_id})"
-        # Scale each robot's score by the tracking factor — gives best estimate
+        # Scale each robot's score by the tracking factor -- gives best estimate
         # of true contribution accounting for missed attributions
         scaled = rs["total"] / tracking_factor if tracking_factor > 0 else 0.0
         print(f"  {label:<16} {rs['total']:>5}  {rs['auto']:>5}  {rs['teleop']:>6}"
