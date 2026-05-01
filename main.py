@@ -71,17 +71,16 @@ class RobotIDUI:
     ui.apply_assignments(result, frame_idx)
     """
 
-    _WINDOW     = "Robot Re-ID"
-    _BTN_H      = 38      # button bar height (px)
-    _BTN_PAD    = 8       # padding inside button bar
-    _BANNER_H   = 48      # top info banner height (px)
+    _WINDOW     = "Stupid annoying window now follow directions you bum"
+    _BTN_H      = 52      # button bar height (px)
+    _BTN_PAD    = 10      # padding inside button bar
+    _BANNER_H   = 72      # top info banner height (px)
 
     # Button definitions: (label, key, bg_color, text_color)
     _BTNS = [
-        ("Confirm [C]",      ord("c"), (30, 160,  30), (255, 255, 255)),
-        ("Not in frame [N]", ord("n"), (30,  30, 160), (255, 255, 255)),
-        ("Done [D]",         ord("d"), (0,  180,  90), (255, 255, 255)),
-        ("Skip [ESC]",       27,       (60,  60,  60), (200, 200, 200)),
+        ("Confirm [C]",      ord("c"), (20, 150,  20), (255, 255, 255)),
+        ("Not in frame [N]", ord("n"), (20,  20, 150), (255, 255, 255)),
+        ("Skip [ESC]",       27,       (60,  60,  60), (180, 180, 180)),
     ]
 
     def __init__(self, robot_tracker: "RobotTracker"):
@@ -113,6 +112,7 @@ class RobotIDUI:
         aborted  = False
 
         cv2.namedWindow(self._WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self._WINDOW, 1280, 760) # aaaaaaa why is the default like 20 pixels
 
         # Single persistent callback container — lives on self so it can never
         # be garbage-collected while OpenCV still holds a reference to _mouse.
@@ -163,7 +163,8 @@ class RobotIDUI:
             alliance_cap = "Red" if slot_id < 3 else "Blue"
             alliance_num = (slot_id % 3) + 1
             label = f"{alliance_cap} {alliance_num}"   # e.g. "Red 1", "Blue 3"
-            color   = _SLOT_COLORS[slot_id % len(_SLOT_COLORS)]
+            # BGR: red alliance = bright red, blue alliance = bright blue
+            color = (0, 0, 220) if slot_id < 3 else (220, 80, 0)
 
             # Reset shared state for this slot; keep _cb_state[0] pointing at it
             state = {
@@ -172,7 +173,6 @@ class RobotIDUI:
                 "dragging":     False,
                 "confirmed":    False,
                 "not_in_frame": False,
-                "done":         False,
                 "abort":        False,
                 "mouse_pos":    (0, 0),
                 # stored so _mouse can read them without a closure over loop vars
@@ -187,7 +187,7 @@ class RobotIDUI:
 
             # Inner repaint loop for this slot
             while not state["confirmed"] and not state["not_in_frame"] \
-                    and not state["done"] and not state["abort"]:
+                    and not state["abort"]:
 
                 canvas = self._build_canvas(
                     display_frame, slot_id, current_idx, slot_ids,
@@ -203,13 +203,6 @@ class RobotIDUI:
                         state["confirmed"] = True
                 elif key == ord("n"):            # N → not in frame
                     state["not_in_frame"] = True
-                elif key == ord("d"):            # D → done (only if all resolved)
-                    all_done = all(
-                        (s in result or s in absent)
-                        for s in slot_ids
-                    )
-                    if all_done:
-                        state["done"] = True
 
             # Disable callback before we modify any shared state so a stray
             # mouse event between iterations can never write to a dead dict.
@@ -217,9 +210,6 @@ class RobotIDUI:
 
             if state["abort"]:
                 aborted = True
-                break
-
-            if state["done"]:
                 break
 
             if state["confirmed"] and state["box_start"] and state["box_end"]:
@@ -260,13 +250,6 @@ class RobotIDUI:
                         state["confirmed"] = True
                 elif "Not in frame" in label:
                     state["not_in_frame"] = True
-                elif "Done" in label:
-                    all_done = all(
-                        (s in result or s in absent)
-                        for s in slot_ids
-                    )
-                    if all_done:
-                        state["done"] = True
                 elif "Skip" in label:
                     state["abort"] = True
                 break
@@ -300,39 +283,61 @@ class RobotIDUI:
         # Offset everything: frame content starts at y=extra_top
         frame_oy = extra_top
 
-        label = state["_label"]
+        current_label = state["_label"]
 
         # ── Draw existing robot positions (already initialized) ───────────
+        # Skip slots already confirmed/absent in this session — they get their
+        # own marker drawn in the confirmed-boxes loop below, avoiding duplicates.
         for sid, track in self._rt.tracks.items():
             if not track.initialized:
                 continue
-            c = _SLOT_COLORS[sid % len(_SLOT_COLORS)]
+            if sid in result or sid in absent:
+                continue
+            c = (0, 0, 220) if sid < 3 else (220, 80, 0)
             px, py = track.position()
             dpx2 = px + ox
             dpy2 = py + oy + frame_oy
             alpha = max(0.3, 1.0 - track.ghost_count / max(1, ROBOT_TRACK_LOSS_OK))
             dc = tuple(int(ch * alpha) for ch in c)
-            cv2.circle(canvas, (dpx2, dpy2), 10, dc, 2, cv2.LINE_AA)
+            cv2.circle(canvas, (dpx2, dpy2), 12, dc, 2, cv2.LINE_AA)
             sid_alliance_cap = track.alliance.capitalize()
             sid_num          = (sid % 3) + 1
-            cv2.putText(canvas, f"{sid_alliance_cap} {sid_num}", (dpx2 + 12, dpy2 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, dc, 1, cv2.LINE_AA)
+            lbl = f"{sid_alliance_cap} {sid_num}"
+            # Dark shadow then bright text for readability over any background
+            cv2.putText(canvas, lbl, (dpx2 + 14, dpy2 - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(canvas, lbl, (dpx2 + 14, dpy2 - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, dc, 1, cv2.LINE_AA)
 
         # ── Draw confirmed boxes from this session ────────────────────────
         for prev_sid, (pcx, pcy) in result.items():
-            c = _SLOT_COLORS[prev_sid % len(_SLOT_COLORS)]
+            # BUG FIX: use prev_sid's own label, not the current slot's label
+            prev_alliance_cap = "Red" if prev_sid < 3 else "Blue"
+            prev_alliance_num = (prev_sid % 3) + 1
+            prev_label = f"{prev_alliance_cap} {prev_alliance_num}"
+            c = (0, 0, 220) if prev_sid < 3 else (220, 80, 0)
             px = pcx + ox
             py = pcy + oy + frame_oy
-            cv2.circle(canvas, (px, py), 8, c, -1, cv2.LINE_AA)
-            cv2.putText(canvas, f"OK {label}", (px + 10, py - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1, cv2.LINE_AA)
+            cv2.circle(canvas, (px, py), 10, c, -1, cv2.LINE_AA)
+            cv2.circle(canvas, (px, py), 10, (255, 255, 255), 1, cv2.LINE_AA)
+            ok_lbl = f"OK: {prev_label}"
+            cv2.putText(canvas, ok_lbl, (px + 14, py - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(canvas, ok_lbl, (px + 14, py - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, c, 1, cv2.LINE_AA)
 
-        # ── Draw "absent" labels ──────────────────────────────────────────
+        # ── Draw "absent" labels — rendered in top-left corner of image ───
         for ai, asid in enumerate(absent):
-            c = _SLOT_COLORS[asid % len(_SLOT_COLORS)]
-            cv2.putText(canvas, f"{label}: NOT IN FRAME",
-                        (10, frame_oy + 20 + ai * 18),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, c, 1, cv2.LINE_AA)
+            absent_alliance_cap = "Red" if asid < 3 else "Blue"
+            absent_alliance_num = (asid % 3) + 1
+            absent_label = f"{absent_alliance_cap} {absent_alliance_num}"
+            c = (0, 0, 220) if asid < 3 else (220, 80, 0)
+            txt = f"{absent_label}: NOT IN FRAME"
+            ty_absent = frame_oy + 28 + ai * 26
+            cv2.putText(canvas, txt, (12, ty_absent),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(canvas, txt, (12, ty_absent),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, c, 1, cv2.LINE_AA)
 
         # ── Draw the in-progress drag box ─────────────────────────────────
         if state["box_start"] and state["box_end"]:
@@ -343,54 +348,60 @@ class RobotIDUI:
             # Filled semi-transparent highlight
             overlay = canvas.copy()
             cv2.rectangle(overlay, (bx1, by1), (bx2, by2), color, -1)
-            cv2.addWeighted(overlay, 0.25, canvas, 0.75, 0, canvas)
-            # Solid border
+            cv2.addWeighted(overlay, 0.22, canvas, 0.78, 0, canvas)
+            # Solid border (thicker = more visible)
+            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (0, 0, 0), 4, cv2.LINE_AA)
             cv2.rectangle(canvas, (bx1, by1), (bx2, by2), color, 2, cv2.LINE_AA)
             # Centre crosshair
             cx = (bx1 + bx2) // 2
             cy = (by1 + by2) // 2
-            cv2.drawMarker(canvas, (cx, cy), color, cv2.MARKER_CROSS, 14, 2)
-            # Size label
-            cv2.putText(canvas, f"{bx2-bx1}x{by2-by1}", (bx1, by1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+            cv2.drawMarker(canvas, (cx, cy), (0, 0, 0), cv2.MARKER_CROSS, 18, 4)
+            cv2.drawMarker(canvas, (cx, cy), color, cv2.MARKER_CROSS, 18, 2)
+            # Size label with shadow
+            size_lbl = f"{bx2-bx1}x{by2-by1}"
+            cv2.putText(canvas, size_lbl, (bx1 + 2, by1 - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(canvas, size_lbl, (bx1 + 2, by1 - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
         # ── Top banner ────────────────────────────────────────────────────
-        cv2.rectangle(canvas, (0, 0), (w, self._BANNER_H), (18, 18, 18), -1)
+        cv2.rectangle(canvas, (0, 0), (w, self._BANNER_H), (15, 15, 15), -1)
+        # Colored left accent bar for the current slot
+        cv2.rectangle(canvas, (0, 0), (6, self._BANNER_H), color, -1)
         title = prompt or "ROBOT RE-IDENTIFICATION"
-        cv2.putText(canvas, title, (8, 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.82, (0, 220, 255), 1, cv2.LINE_AA)
-        slot_info = (f"{label}  ({current_idx + 1}/{len(slot_ids)})  "
-                     f": draw a box, then click Confirm.  "
-                     f"{'[BOX READY]' if state['box_start'] and state['box_end'] else '[NO BOX]'}")
-        cv2.putText(canvas, slot_info, (8, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.68, color, 1, cv2.LINE_AA)
-        # Slot colour swatch
-        cv2.circle(canvas, (w - 22, self._BANNER_H // 2), 14, color, -1, cv2.LINE_AA)
-        cv2.circle(canvas, (w - 22, self._BANNER_H // 2), 14, (255, 255, 255), 1)
+        cv2.putText(canvas, title, (14, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 220, 255), 2, cv2.LINE_AA)
+        box_status = "[BOX READY]" if state["box_start"] and state["box_end"] else "[NO BOX - drag to draw]"
+        slot_info = f"{current_label}  ({current_idx + 1}/{len(slot_ids)})   {box_status}"
+        cv2.putText(canvas, slot_info, (14, 56),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv2.LINE_AA)
+        # Slot colour swatch (larger, with white ring)
+        swatch_cx = w - 30
+        swatch_cy = self._BANNER_H // 2
+        cv2.circle(canvas, (swatch_cx, swatch_cy), 20, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, (swatch_cx, swatch_cy), 20, (255, 255, 255), 2, cv2.LINE_AA)
 
         # ── Bottom button bar ─────────────────────────────────────────────
         btn_area_y = canvas_h - self._BTN_H
-        cv2.rectangle(canvas, (0, btn_area_y), (w, canvas_h), (25, 25, 25), -1)
-        all_resolved = all((s in result or s in absent) for s in slot_ids)
+        cv2.rectangle(canvas, (0, btn_area_y), (w, canvas_h), (20, 20, 20), -1)
+        cv2.line(canvas, (0, btn_area_y), (w, btn_area_y), (60, 60, 60), 1)
         btn_rects    = self._button_rects(base_frame)
-        for i, (label, _, bg, fg) in enumerate(self._BTNS):
+        for i, (btn_label, _, bg, fg) in enumerate(self._BTNS):
             bx1, by1, bx2, by2 = btn_rects[i]
+            active_bg = bg
+            active_fg = fg
             # "Confirm" is greyed if no box yet
-            if "Confirm" in label and not (state["box_start"] and state["box_end"]):
-                bg = (45, 45, 45)
-                fg = (90, 90, 90)
-            # "Done" is greyed until all slots resolved
-            if "Done" in label and not all_resolved:
-                bg = (45, 45, 45)
-                fg = (90, 90, 90)
-            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), bg, -1)
-            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (80, 80, 80), 1)
+            if "Confirm" in btn_label and not (state["box_start"] and state["box_end"]):
+                active_bg = (40, 40, 40)
+                active_fg = (80, 80, 80)
+            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), active_bg, -1)
+            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (90, 90, 90), 1)
             # Centre the text in the button
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
+            (tw, th), _ = cv2.getTextSize(btn_label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
             tx = bx1 + (bx2 - bx1 - tw) // 2
             ty = by1 + (by2 - by1 + th) // 2
-            cv2.putText(canvas, label, (tx, ty),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, fg, 1, cv2.LINE_AA)
+            cv2.putText(canvas, btn_label, (tx, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, active_fg, 1, cv2.LINE_AA)
 
         return canvas
 
@@ -934,9 +945,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
                 px, py = track.position()
                 bx2, by1 = px + track.w // 2, py - track.h // 2
 
-            cv2.putText(vis, robot_label, (bx2 + 4, by1 + 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, slot_color, 1, cv2.LINE_AA)
-            cv2.putText(vis, score_label, (bx2 + 4, by1 + 26),
+            cv2.putText(vis, score_label, (bx2 + 4, by1 + 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, slot_color, 1, cv2.LINE_AA)
 
         # ── Current game period indicator ──────────────────────────────────
@@ -1028,7 +1037,7 @@ def run(video_path, side, frame_skip=FRAME_SKIP, max_stale_frames=2):
                     (tx + 2, foot_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.33, (160,160,160), 1)
 
-        cv2.imshow("tracking", vis)
+        cv2.imshow("Main annoying window that is part of the program thats murdering your system", vis)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
